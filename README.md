@@ -337,6 +337,10 @@ The automated and offline verification covers:
 
 Version 1.0.0 has also been manually verified in SimHub for plugin loading, Spotify authorization, metadata properties, dashboard rendering, and mobile cover updates. [MANUAL_TESTING.md](MANUAL_TESTING.md) remains the reusable verification checklist for future releases.
 
+## Contributors
+
+SpotifySimHub was built collaboratively. Special thanks to [@mescon](https://github.com/mescon) for their contributions to the project.
+
 ## Contributing
 
 Keep changes small and preserve the six original public SimHub property names. Treat `Spotify.CoverDash` as an additional public compatibility contract. Never commit:
