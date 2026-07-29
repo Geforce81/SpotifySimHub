@@ -1,0 +1,126 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="14.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <Import Project="$(MSBuildProjectDirectory)\SpotifyClientId.local.props" Condition="Exists('$(MSBuildProjectDirectory)\SpotifyClientId.local.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{833040C9-FE5E-4CCF-B21D-71979E049B6B}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>SpotifySimHub</RootNamespace>
+    <AssemblyName>SpotifySimHub</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <TargetFrameworkProfile />
+    <SimHubInstallPath Condition="'$(SimHubInstallPath)' == ''">$(SIMHUB_INSTALL_PATH)</SimHubInstallPath>
+    <SpotifyBuildConfigurationFile>obj\$(Configuration)\SpotifyBuildConfiguration.g.cs</SpotifyBuildConfigurationFile>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="GameReaderCommon">
+      <HintPath>$(SimHubInstallPath)GameReaderCommon.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="log4net">
+      <HintPath>$(SimHubInstallPath)log4net.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
+      <HintPath>packages\Newtonsoft.Json.13.0.4\lib\net45\Newtonsoft.Json.dll</HintPath>
+    </Reference>
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="SimHub.Logging, Version=1.0.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>$(SimHubInstallPath)SimHub.Logging.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="SimHub.Plugins">
+      <HintPath>$(SimHubInstallPath)SimHub.Plugins.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xaml" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Security" />
+    <Reference Include="WindowsBase" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="SpotifyPlugin.cs" />
+    <Compile Include="SpotifyPluginSettings.cs" />
+    <Compile Include="SpotifyModels.cs" />
+    <Compile Include="SpotifyTokenStore.cs" />
+    <Compile Include="SpotifyOAuthClient.cs" />
+    <Compile Include="SpotifyApiClient.cs" />
+    <Compile Include="SpotifyCoverArtCache.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Properties\Resources.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.resx</DependentUpon>
+    </Compile>
+    <Compile Include="SpotifySettingsControl.xaml.cs">
+      <DependentUpon>SpotifySettingsControl.xaml</DependentUpon>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <Page Include="SpotifySettingsControl.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="SpotifySimHubIcon.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Properties\Resources.resx">
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+    <None Include="SpotifyClientId.example.props" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Target Name="ValidateSpotifyBuildConfiguration" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(SpotifyClientId)' == '' or '$(SpotifyClientId)' == 'YOUR_SPOTIFY_CLIENT_ID'"
+           Text="Create SpotifyClientId.local.props from SpotifyClientId.example.props and configure a Spotify client ID." />
+    <Error Condition="'$(SimHubInstallPath)' == ''"
+           Text="Configure SimHubInstallPath in SpotifyClientId.local.props or set SIMHUB_INSTALL_PATH." />
+    <Error Condition="'$(SimHubInstallPath)' != '' and !Exists('$(SimHubInstallPath)SimHub.Plugins.dll')"
+           Text="SimHubInstallPath does not contain SimHub.Plugins.dll." />
+  </Target>
+  <Target Name="GenerateSpotifyBuildConfiguration"
+          BeforeTargets="CoreCompile"
+          DependsOnTargets="ValidateSpotifyBuildConfiguration">
+    <WriteLinesToFile
+      File="$(SpotifyBuildConfigurationFile)"
+      Lines="namespace SpotifySimHub { internal static class SpotifyBuildConfiguration { internal const string ClientId = &quot;$(SpotifyClientId)&quot;%3B } }"
+      Overwrite="true"
+      Encoding="UTF-8" />
+    <ItemGroup>
+      <Compile Include="$(SpotifyBuildConfigurationFile)" />
+    </ItemGroup>
+  </Target>
+</Project>
