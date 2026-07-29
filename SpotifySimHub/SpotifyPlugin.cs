@@ -35,11 +35,16 @@ namespace SpotifySimHub
         private string track = "";
         private string album = "";
         private string cover = "";
+        private string coverDash = "";
         private ImageSource coverImage;
         private string connectionStatus = "Disconnected";
         private bool isConnected;
         private bool hasSavedLogin;
         private bool isBusy;
+        private bool isAuthorizationInProgress;
+        private bool hasConfiguredClientId;
+        private string clientIdConfigurationStatus =
+            "Spotify Client ID required";
 
         public string CurrentTrack
         {
@@ -69,6 +74,12 @@ namespace SpotifySimHub
         {
             get => cover;
             private set => SetProperty(ref cover, value);
+        }
+
+        public string CoverDash
+        {
+            get => coverDash;
+            private set => SetProperty(ref coverDash, value);
         }
 
         public ImageSource CoverImage
@@ -110,19 +121,47 @@ namespace SpotifySimHub
             private set => SetProperty(ref isBusy, value);
         }
 
+        public bool IsAuthorizationInProgress
+        {
+            get => isAuthorizationInProgress;
+            private set =>
+                SetProperty(
+                    ref isAuthorizationInProgress,
+                    value);
+        }
+
+        public bool HasConfiguredClientId
+        {
+            get => hasConfiguredClientId;
+            private set =>
+                SetProperty(
+                    ref hasConfiguredClientId,
+                    value);
+        }
+
+        public string ClientIdConfigurationStatus
+        {
+            get => clientIdConfigurationStatus;
+            private set =>
+                SetProperty(
+                    ref clientIdConfigurationStatus,
+                    value);
+        }
+
         private readonly HttpClient httpClient = new HttpClient();
 
-        private static readonly string ClientId =
+        private static readonly string BuildClientId =
             SpotifyBuildConfiguration.ClientId;
         private const string RedirectUri = "http://127.0.0.1:9877/callback";
         private const string ListenerPrefix = "http://127.0.0.1:9877/";
         private static readonly TimeSpan HttpRequestTimeout =
             TimeSpan.FromSeconds(20);
         private static readonly TimeSpan AuthorizationTimeout =
-            TimeSpan.FromMinutes(5);
+            TimeSpan.FromMinutes(2);
 
         private string accessToken = "";
         private string refreshToken = "";
+        private string configuredClientId = "";
         private DateTime accessTokenExpiresUtc = DateTime.MinValue;
 
         private readonly object lifecycleLock = new object();
@@ -148,6 +187,7 @@ namespace SpotifySimHub
         private int temporaryFailureCount;
         private int authenticationGeneration;
         private int busyOperationCount;
+        private int automaticReauthorizationStarted;
         private bool ending;
 
         public event PropertyChangedEventHandler PropertyChanged;
@@ -180,6 +220,129 @@ namespace SpotifySimHub
                     Environment.SpecialFolder.LocalApplicationData),
                 "SpotifySimHub");
 
+        public bool ConfigureClientId(string clientId)
+        {
+            if (ending)
+            {
+                return false;
+            }
+
+            string normalizedClientId =
+                (clientId ?? "").Trim();
+
+            if (!IsUsableClientId(normalizedClientId))
+            {
+                ClientIdConfigurationStatus =
+                    "Enter a valid Spotify Client ID";
+                return false;
+            }
+
+            bool clientChanged =
+                !string.Equals(
+                    configuredClientId,
+                    normalizedClientId,
+                    StringComparison.Ordinal);
+
+            Settings.SpotifyClientId =
+                normalizedClientId;
+
+            this.SaveCommonSettings(
+                "GeneralSettings",
+                Settings);
+
+            if (!clientChanged)
+            {
+                ClientIdConfigurationStatus =
+                    "Spotify Client ID is configured";
+                HasConfiguredClientId = true;
+                return true;
+            }
+
+            Interlocked.Increment(
+                ref authenticationGeneration);
+            RenewSessionCancellation();
+
+            lock (tokenLock)
+            {
+                accessToken = "";
+                refreshToken = "";
+                accessTokenExpiresUtc =
+                    DateTime.MinValue;
+            }
+
+            try
+            {
+                tokenStore?.Delete();
+            }
+            catch (Exception ex)
+            {
+                SimHub.Logging.Current.Error(
+                    "Could not clear the previous Spotify login. " +
+                    ex.GetType().Name);
+            }
+
+            ConfigureSpotifyClients(
+                normalizedClientId);
+            Interlocked.Exchange(
+                ref automaticReauthorizationStarted,
+                0);
+
+            ClearPlaybackAndCover();
+            ResetPlaybackBackoff();
+            HasSavedLogin = false;
+            IsConnected = false;
+            ConnectionStatus =
+                "Client ID saved. Press Connect.";
+            return true;
+        }
+
+        private static bool IsUsableClientId(
+            string clientId)
+        {
+            return
+                !string.IsNullOrWhiteSpace(clientId) &&
+                !string.Equals(
+                    clientId,
+                    "YOUR_SPOTIFY_CLIENT_ID",
+                    StringComparison.Ordinal);
+        }
+
+        private void ConfigureSpotifyClients(
+            string clientId)
+        {
+            configuredClientId =
+                IsUsableClientId(clientId)
+                    ? clientId.Trim()
+                    : "";
+
+            HasConfiguredClientId =
+                !string.IsNullOrEmpty(
+                    configuredClientId);
+            ClientIdConfigurationStatus =
+                HasConfiguredClientId
+                    ? "Spotify Client ID is configured"
+                    : "Spotify Client ID required";
+
+            if (!HasConfiguredClientId)
+            {
+                oauthClient = null;
+                apiClient = null;
+                return;
+            }
+
+            oauthClient =
+                new SpotifyOAuthClient(
+                    httpClient,
+                    configuredClientId,
+                    RedirectUri,
+                    ListenerPrefix,
+                    AuthorizationTimeout);
+            apiClient =
+                new SpotifyApiClient(
+                    httpClient,
+                    configuredClientId);
+        }
+
         private async Task<bool> RefreshAccessTokenAsync(
             CancellationToken cancellationToken)
         {
@@ -202,6 +365,15 @@ namespace SpotifySimHub
                 {
                     IsConnected = false;
                     ConnectionStatus = "Login required";
+                    return false;
+                }
+
+                if (!HasConfiguredClientId ||
+                    apiClient == null)
+                {
+                    IsConnected = false;
+                    ConnectionStatus =
+                        "Spotify Client ID required";
                     return false;
                 }
 
@@ -263,6 +435,27 @@ namespace SpotifySimHub
                 throw;
             }
             catch (SpotifyApiException ex)
+                when (ex.Kind ==
+                      SpotifyApiErrorKind.InvalidGrant)
+            {
+                if (ending ||
+                    cancellationToken.IsCancellationRequested ||
+                    refreshGeneration !=
+                    authenticationGeneration)
+                {
+                    return false;
+                }
+
+                HandleExpiredAuthorization();
+                QueueAutomaticReauthorization();
+
+                SimHub.Logging.Current.Info(
+                    "The saved Spotify authorization expired; " +
+                    "reauthorization was requested.");
+
+                return false;
+            }
+            catch (SpotifyApiException ex)
             {
                 IsConnected = false;
                 ConnectionStatus = "Login required";
@@ -291,6 +484,88 @@ namespace SpotifySimHub
             }
         }
 
+        private void HandleExpiredAuthorization()
+        {
+            Interlocked.Increment(
+                ref authenticationGeneration);
+            RenewSessionCancellation();
+
+            lock (tokenLock)
+            {
+                accessToken = "";
+                refreshToken = "";
+                accessTokenExpiresUtc =
+                    DateTime.MinValue;
+            }
+
+            try
+            {
+                tokenStore?.Delete();
+            }
+            catch (Exception ex)
+            {
+                SimHub.Logging.Current.Error(
+                    "Could not remove the expired Spotify login. " +
+                    ex.GetType().Name);
+            }
+
+            HasSavedLogin = false;
+            IsConnected = false;
+            ClearPlaybackAndCover();
+            ResetPlaybackBackoff();
+            ConnectionStatus =
+                "Spotify login expired. Reauthorization required.";
+        }
+
+        private void QueueAutomaticReauthorization()
+        {
+            if (ending ||
+                !HasConfiguredClientId ||
+                Interlocked.CompareExchange(
+                    ref automaticReauthorizationStarted,
+                    1,
+                    0) != 0)
+            {
+                return;
+            }
+
+            Task task =
+                AutomaticReauthorizationAsync(
+                    GetSessionCancellationToken());
+
+            lock (lifecycleLock)
+            {
+                connectionTask = task;
+            }
+        }
+
+        private async Task AutomaticReauthorizationAsync(
+            CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+            BeginBusy();
+
+            try
+            {
+                ConnectionStatus =
+                    "Spotify login expired. Opening authorization...";
+
+                await LoginToSpotifyAsync(
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            finally
+            {
+                Interlocked.Exchange(
+                    ref automaticReauthorizationStarted,
+                    0);
+                EndBusy();
+            }
+        }
+
         private async Task<bool> LoginToSpotifyAsync(
             CancellationToken cancellationToken)
         {
@@ -299,9 +574,21 @@ namespace SpotifySimHub
                 .ConfigureAwait(false);
 
             int loginGeneration = authenticationGeneration;
+            bool authorizationStarted = false;
 
             try
             {
+                if (!HasConfiguredClientId ||
+                    oauthClient == null)
+                {
+                    IsConnected = false;
+                    ConnectionStatus =
+                        "Spotify Client ID required";
+                    return false;
+                }
+
+                IsAuthorizationInProgress = true;
+                authorizationStarted = true;
                 ConnectionStatus = "Connecting to Spotify...";
 
                 SpotifyTokenResult tokenResult =
@@ -392,6 +679,11 @@ namespace SpotifySimHub
             }
             finally
             {
+                if (authorizationStarted)
+                {
+                    IsAuthorizationInProgress = false;
+                }
+
                 loginSemaphore.Release();
             }
         }
@@ -415,6 +707,30 @@ namespace SpotifySimHub
             return task;
         }
 
+        public void CancelConnectionAttempt()
+        {
+            if (ending ||
+                !IsAuthorizationInProgress)
+            {
+                return;
+            }
+
+            Interlocked.Increment(
+                ref authenticationGeneration);
+            RenewSessionCancellation();
+            Interlocked.Exchange(
+                ref automaticReauthorizationStarted,
+                0);
+
+            ConnectionStatus =
+                IsConnected
+                    ? "Connected"
+                    : HasSavedLogin
+                        ? "Spotify authorization was cancelled; " +
+                          "saved login retained"
+                        : "Spotify authorization was cancelled";
+        }
+
         public void Disconnect()
         {
             Interlocked.Increment(
@@ -422,6 +738,9 @@ namespace SpotifySimHub
 
             IsConnected = false;
             RenewSessionCancellation();
+            Interlocked.Exchange(
+                ref automaticReauthorizationStarted,
+                0);
 
             lock (tokenLock)
             {
@@ -475,6 +794,7 @@ namespace SpotifySimHub
             Album = "";
             CurrentTrack = "";
             Cover = "";
+            CoverDash = "";
             CoverImage = null;
 
             try
@@ -537,6 +857,15 @@ namespace SpotifySimHub
                     .Ticks);
         }
 
+        private void ScheduleIdlePolling()
+        {
+            Interlocked.Exchange(
+                ref nextPlaybackRequestUtcTicks,
+                DateTime.UtcNow
+                    .AddSeconds(5)
+                    .Ticks);
+        }
+
         private async Task UpdateCoverArtAsync(
             string coverUrl,
             int operationGeneration,
@@ -559,6 +888,7 @@ namespace SpotifySimHub
                 }
 
                 Cover = result.CoverPath;
+                CoverDash = result.DashCoverPath;
                 CoverImage = result.CoverImage;
             }
             catch (OperationCanceledException)
@@ -706,6 +1036,7 @@ namespace SpotifySimHub
                     SpotifyPlaybackStatus.NoContent)
                 {
                     ResetPlaybackBackoff();
+                    ScheduleIdlePolling();
                     ClearPlaybackAndCover();
                     CurrentTrack =
                         "No music is currently playing";
@@ -753,9 +1084,15 @@ namespace SpotifySimHub
                 ConnectionStatus = "Connected";
                 ResetPlaybackBackoff();
 
+                if (!result.IsPlaying)
+                {
+                    ScheduleIdlePolling();
+                }
+
                 if (string.IsNullOrEmpty(
                         result.TrackName))
                 {
+                    ScheduleIdlePolling();
                     ClearPlaybackAndCover();
                     CurrentTrack =
                         "No music is currently playing";
@@ -896,6 +1233,14 @@ namespace SpotifySimHub
                         5000,
                         cancellationToken)
                     .ConfigureAwait(false);
+
+                if (!HasConfiguredClientId)
+                {
+                    IsConnected = false;
+                    ConnectionStatus =
+                        "Spotify Client ID required";
+                    return;
+                }
 
                 BeginBusy();
 
@@ -1063,8 +1408,8 @@ namespace SpotifySimHub
 
             int pollIntervalSeconds =
                 Math.Max(
-                    1,
-                    Settings?.PollIntervalSeconds ?? 2);
+                    3,
+                    Settings?.PollIntervalSeconds ?? 3);
 
             if ((DateTime.UtcNow - lastTrackRequest).TotalSeconds <
                 pollIntervalSeconds)
@@ -1197,21 +1542,26 @@ namespace SpotifySimHub
             tokenStore =
                 new SpotifyTokenStore(
                     SpotifyDataFolder);
-            oauthClient =
-                new SpotifyOAuthClient(
-                    httpClient,
-                    ClientId,
-                    RedirectUri,
-                    ListenerPrefix,
-                    AuthorizationTimeout);
-            apiClient =
-                new SpotifyApiClient(
-                    httpClient,
-                    ClientId);
             coverArtCache =
                 new SpotifyCoverArtCache(
                     httpClient,
                     SpotifyDataFolder);
+
+            string settingsClientId =
+                Settings?.SpotifyClientId ?? "";
+            string initialClientId =
+                IsUsableClientId(settingsClientId)
+                    ? settingsClientId
+                    : BuildClientId;
+
+            ConfigureSpotifyClients(
+                initialClientId);
+
+            if (!HasConfiguredClientId)
+            {
+                ConnectionStatus =
+                    "Spotify Client ID required";
+            }
 
             this.AttachDelegate(
                 name: "Spotify.CurrentTrack",
@@ -1232,6 +1582,10 @@ namespace SpotifySimHub
             this.AttachDelegate(
                 name: "Spotify.Cover",
                 valueProvider: () => Cover);
+
+            this.AttachDelegate(
+                name: "Spotify.CoverDash",
+                valueProvider: () => CoverDash);
 
             this.AttachDelegate(
                 name: "Spotify.CoverImage",

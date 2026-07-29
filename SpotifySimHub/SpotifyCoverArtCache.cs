@@ -15,11 +15,13 @@ namespace SpotifySimHub
 
         private readonly HttpClient httpClient;
         private readonly string coverPath;
-        private readonly string temporaryCoverPath;
+        private readonly string[] dashCoverPaths;
         private readonly SemaphoreSlim coverSemaphore =
             new SemaphoreSlim(1, 1);
 
         private string currentCoverUrl = "";
+        private string currentDashCoverPath = "";
+        private int nextDashCoverIndex;
         private ImageSource currentCoverImage;
         private bool disposed;
 
@@ -42,8 +44,16 @@ namespace SpotifySimHub
                 Path.Combine(
                     dataFolder,
                     "cover.jpg");
-            temporaryCoverPath =
-                coverPath + ".tmp";
+            dashCoverPaths =
+                new[]
+                {
+                    Path.Combine(
+                        dataFolder,
+                        "cover-dash-a.jpg"),
+                    Path.Combine(
+                        dataFolder,
+                        "cover-dash-b.jpg")
+                };
         }
 
         public async Task<SpotifyCoverArtResult> GetAsync(
@@ -73,6 +83,8 @@ namespace SpotifySimHub
                     return new SpotifyCoverArtResult
                     {
                         CoverPath = coverPath,
+                        DashCoverPath =
+                            currentDashCoverPath,
                         CoverUrl = currentCoverUrl,
                         CoverImage = currentCoverImage
                     };
@@ -160,41 +172,31 @@ namespace SpotifySimHub
                             Path.GetDirectoryName(coverPath);
                         Directory.CreateDirectory(folder);
 
-                        DeleteIfExists(
-                            temporaryCoverPath);
+                        WriteAllBytesAtomically(
+                            coverPath,
+                            imageBytes);
 
-                        try
-                        {
-                            File.WriteAllBytes(
-                                temporaryCoverPath,
-                                imageBytes);
+                        string nextDashCoverPath =
+                            dashCoverPaths[
+                                nextDashCoverIndex];
 
-                            if (File.Exists(coverPath))
-                            {
-                                File.Replace(
-                                    temporaryCoverPath,
-                                    coverPath,
-                                    null);
-                            }
-                            else
-                            {
-                                File.Move(
-                                    temporaryCoverPath,
-                                    coverPath);
-                            }
-                        }
-                        finally
-                        {
-                            DeleteIfExists(
-                                temporaryCoverPath);
-                        }
+                        WriteAllBytesAtomically(
+                            nextDashCoverPath,
+                            imageBytes);
 
                         currentCoverUrl = coverUrl;
+                        currentDashCoverPath =
+                            nextDashCoverPath;
+                        nextDashCoverIndex =
+                            (nextDashCoverIndex + 1) %
+                            dashCoverPaths.Length;
                         currentCoverImage = bitmap;
 
                         return new SpotifyCoverArtResult
                         {
                             CoverPath = coverPath,
+                            DashCoverPath =
+                                currentDashCoverPath,
                             CoverUrl = coverUrl,
                             CoverImage = bitmap
                         };
@@ -237,15 +239,59 @@ namespace SpotifySimHub
         private void ClearCore()
         {
             currentCoverUrl = "";
+            currentDashCoverPath = "";
             currentCoverImage = null;
 
-            if (File.Exists(coverPath))
+            DeleteIfExists(
+                coverPath);
+            DeleteIfExists(
+                coverPath + ".tmp");
+
+            foreach (string dashCoverPath in
+                     dashCoverPaths)
             {
-                File.Delete(coverPath);
+                DeleteIfExists(
+                    dashCoverPath);
+                DeleteIfExists(
+                    dashCoverPath + ".tmp");
             }
+        }
+
+        private static void WriteAllBytesAtomically(
+            string filePath,
+            byte[] imageBytes)
+        {
+            string temporaryFilePath =
+                filePath + ".tmp";
 
             DeleteIfExists(
-                temporaryCoverPath);
+                temporaryFilePath);
+
+            try
+            {
+                File.WriteAllBytes(
+                    temporaryFilePath,
+                    imageBytes);
+
+                if (File.Exists(filePath))
+                {
+                    File.Replace(
+                        temporaryFilePath,
+                        filePath,
+                        null);
+                }
+                else
+                {
+                    File.Move(
+                        temporaryFilePath,
+                        filePath);
+                }
+            }
+            finally
+            {
+                DeleteIfExists(
+                    temporaryFilePath);
+            }
         }
 
         private static async Task<byte[]> ReadImageBytesAsync(

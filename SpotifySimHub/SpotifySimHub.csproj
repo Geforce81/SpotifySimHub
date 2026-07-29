@@ -14,6 +14,9 @@
     <FileAlignment>512</FileAlignment>
     <TargetFrameworkProfile />
     <SimHubInstallPath Condition="'$(SimHubInstallPath)' == ''">$(SIMHUB_INSTALL_PATH)</SimHubInstallPath>
+    <EmbedSpotifyClientId Condition="'$(EmbedSpotifyClientId)' == '' and '$(Configuration)' == 'Debug'">true</EmbedSpotifyClientId>
+    <EmbedSpotifyClientId Condition="'$(EmbedSpotifyClientId)' == ''">false</EmbedSpotifyClientId>
+    <SpotifyEmbeddedClientId Condition="'$(EmbedSpotifyClientId)' == 'true' and '$(SpotifyClientId)' != '' and '$(SpotifyClientId)' != 'YOUR_SPOTIFY_CLIENT_ID'">$(SpotifyClientId)</SpotifyEmbeddedClientId>
     <SpotifyBuildConfigurationFile>obj\$(Configuration)\SpotifyBuildConfiguration.g.cs</SpotifyBuildConfigurationFile>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
@@ -44,6 +47,7 @@
     </Reference>
     <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
       <HintPath>packages\Newtonsoft.Json.13.0.4\lib\net45\Newtonsoft.Json.dll</HintPath>
+      <Private>True</Private>
     </Reference>
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
@@ -82,9 +86,20 @@
     <Compile Include="SpotifySettingsControl.xaml.cs">
       <DependentUpon>SpotifySettingsControl.xaml</DependentUpon>
     </Compile>
+    <Compile Include="SpotifySetupGuideWindow.xaml.cs">
+      <DependentUpon>SpotifySetupGuideWindow.xaml</DependentUpon>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
+    <Page Include="SpotifyButtonStyles.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
     <Page Include="SpotifySettingsControl.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="SpotifySetupGuideWindow.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>
@@ -104,8 +119,6 @@
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Target Name="ValidateSpotifyBuildConfiguration" BeforeTargets="PrepareForBuild">
-    <Error Condition="'$(SpotifyClientId)' == '' or '$(SpotifyClientId)' == 'YOUR_SPOTIFY_CLIENT_ID'"
-           Text="Create SpotifyClientId.local.props from SpotifyClientId.example.props and configure a Spotify client ID." />
     <Error Condition="'$(SimHubInstallPath)' == ''"
            Text="Configure SimHubInstallPath in SpotifyClientId.local.props or set SIMHUB_INSTALL_PATH." />
     <Error Condition="'$(SimHubInstallPath)' != '' and !Exists('$(SimHubInstallPath)SimHub.Plugins.dll')"
@@ -116,7 +129,7 @@
           DependsOnTargets="ValidateSpotifyBuildConfiguration">
     <WriteLinesToFile
       File="$(SpotifyBuildConfigurationFile)"
-      Lines="namespace SpotifySimHub { internal static class SpotifyBuildConfiguration { internal const string ClientId = &quot;$(SpotifyClientId)&quot;%3B } }"
+      Lines="namespace SpotifySimHub { internal static class SpotifyBuildConfiguration { internal const string ClientId = &quot;$(SpotifyEmbeddedClientId)&quot;%3B } }"
       Overwrite="true"
       Encoding="UTF-8" />
     <ItemGroup>

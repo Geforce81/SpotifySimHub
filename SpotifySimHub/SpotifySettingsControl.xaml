@@ -7,14 +7,18 @@
              d:DesignWidth="820"
              mc:Ignorable="d">
     <UserControl.Resources>
-        <Style TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#F5F5F5" />
-        </Style>
-        <Style TargetType="Button">
-            <Setter Property="MinWidth" Value="120" />
-            <Setter Property="Margin" Value="0,0,12,0" />
-            <Setter Property="Padding" Value="16,9" />
-        </Style>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="SpotifyButtonStyles.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <Style TargetType="TextBlock">
+                <Setter Property="Foreground" Value="#F5F5F5" />
+            </Style>
+            <Style BasedOn="{StaticResource SpotifySecondaryButton}"
+                   TargetType="Button">
+                <Setter Property="Margin" Value="0,0,12,0" />
+            </Style>
+        </ResourceDictionary>
     </UserControl.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -22,6 +26,7 @@
               Margin="24"
               HorizontalAlignment="Left">
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -77,12 +82,56 @@
                 </Grid>
             </Border>
 
-            <StackPanel Grid.Row="2" Margin="0,20,0,0">
+            <Border Grid.Row="2"
+                    Margin="0,20,0,0"
+                    Padding="20"
+                    Background="#181818"
+                    BorderBrush="#333333"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                <StackPanel>
+                    <TextBlock FontSize="16"
+                               FontWeight="SemiBold"
+                               Text="Spotify application" />
+                    <TextBlock Margin="0,6,0,0"
+                               Foreground="#B3B3B3"
+                               Text="{Binding ClientIdConfigurationStatus}" />
+                    <TextBlock Margin="0,4,0,0"
+                               Foreground="#909090"
+                               Text="Copy the Client ID from your app's Settings page and paste it here." />
+                    <Button x:Name="SetupGuideButton"
+                            HorizontalAlignment="Left"
+                            Margin="0,14,0,0"
+                            Click="SetupGuideButton_Click"
+                            Content="Open setup guide"
+                            Style="{StaticResource SpotifyPrimaryButton}" />
+                    <DockPanel Margin="0,14,0,0"
+                               LastChildFill="True">
+                        <Button x:Name="SaveClientIdButton"
+                                DockPanel.Dock="Right"
+                                Margin="12,0,0,0"
+                                Click="SaveClientIdButton_Click"
+                                Content="Save Client ID" />
+                        <PasswordBox x:Name="ClientIdBox"
+                                     MinHeight="36"
+                                     Padding="10,7"
+                                     PasswordChanged="ClientIdBox_PasswordChanged" />
+                    </DockPanel>
+                </StackPanel>
+            </Border>
+
+            <StackPanel Grid.Row="3" Margin="0,20,0,0">
                 <TextBlock Foreground="#B3B3B3"
                            Text="{Binding SavedLoginStatus, StringFormat=Saved login: {0}}" />
                 <TextBlock Margin="0,8,0,0"
                            Foreground="#B3B3B3"
-                           Text="Login opens only when Connect or Reconnect is selected." />
+                           Text="A browser opens when you select Connect." />
+                <TextBlock Margin="0,4,0,0"
+                           Foreground="#B3B3B3"
+                           Text="If Spotify asks you to connect again later, approve the browser prompt." />
+                <TextBlock Margin="0,4,0,0"
+                           Foreground="#B3B3B3"
+                           Text="Connection closes after two minutes. Select Cancel connection if needed." />
 
                 <TextBlock Margin="0,12,0,0"
                            FontWeight="SemiBold"
@@ -103,14 +152,19 @@
                 <StackPanel Margin="0,18,0,0"
                             Orientation="Horizontal">
                     <Button x:Name="ConnectButton"
+                            Margin="0,0,12,0"
                             Click="ConnectButton_Click"
-                            Content="Connect" />
+                            Content="Connect"
+                            Style="{StaticResource SpotifyPrimaryButton}" />
                     <Button x:Name="DisconnectButton"
                             Click="DisconnectButton_Click"
                             Content="Disconnect" />
                     <Button x:Name="RefreshButton"
                             Click="RefreshButton_Click"
                             Content="Refresh status" />
+                    <Button x:Name="CancelButton"
+                            Click="CancelButton_Click"
+                            Content="Cancel connection" />
                 </StackPanel>
             </StackPanel>
         </Grid>

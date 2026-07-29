@@ -30,6 +30,8 @@ namespace SpotifySimHub
 
         public TimeSpan? RetryAfter { get; set; }
 
+        public bool IsPlaying { get; set; }
+
         public string TrackName { get; set; } = "";
 
         public string ArtistName { get; set; } = "";
@@ -42,6 +44,8 @@ namespace SpotifySimHub
     internal sealed class SpotifyCoverArtResult
     {
         public string CoverPath { get; set; } = "";
+
+        public string DashCoverPath { get; set; } = "";
 
         public string CoverUrl { get; set; } = "";
 
@@ -94,18 +98,48 @@ namespace SpotifySimHub
         public SpotifyAuthenticationErrorKind Kind { get; }
     }
 
+    internal enum SpotifyApiErrorKind
+    {
+        Failed,
+        InvalidGrant
+    }
+
     internal sealed class SpotifyApiException : Exception
     {
         public SpotifyApiException(string message)
-            : base(message)
+            : this(
+                message,
+                SpotifyApiErrorKind.Failed)
         {
         }
 
         public SpotifyApiException(
             string message,
+            SpotifyApiErrorKind kind)
+            : base(message)
+        {
+            Kind = kind;
+        }
+
+        public SpotifyApiException(
+            string message,
+            Exception innerException)
+            : this(
+                message,
+                SpotifyApiErrorKind.Failed,
+                innerException)
+        {
+        }
+
+        public SpotifyApiException(
+            string message,
+            SpotifyApiErrorKind kind,
             Exception innerException)
             : base(message, innerException)
         {
+            Kind = kind;
         }
+
+        public SpotifyApiErrorKind Kind { get; }
     }
 }

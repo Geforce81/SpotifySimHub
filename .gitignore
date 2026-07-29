@@ -4,6 +4,7 @@ obj/
 packages/
 TestResults/
 artifacts/
+dist/
 *.user
 *.suo
 *.userprefs
@@ -15,6 +16,8 @@ refresh_token.dat
 refresh_token.dat.tmp
 cover.jpg
 cover.jpg.tmp
+cover-dash-*.jpg
+cover-dash-*.jpg.tmp
 *.zip
 *.nupkg
 .DS_Store

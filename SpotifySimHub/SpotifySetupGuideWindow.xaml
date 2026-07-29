@@ -1,0 +1,214 @@
+<Window x:Class="SpotifySimHub.SpotifySetupGuideWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SpotifySimHub setup guide"
+        Width="760"
+        Height="720"
+        MinWidth="620"
+        MinHeight="520"
+        WindowStartupLocation="CenterOwner"
+        Background="#101010"
+        Foreground="#F5F5F5">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="SpotifyButtonStyles.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <Style TargetType="TextBlock">
+                <Setter Property="Foreground" Value="#F5F5F5" />
+                <Setter Property="TextWrapping" Value="Wrap" />
+            </Style>
+            <Style BasedOn="{StaticResource SpotifySecondaryButton}"
+                   TargetType="Button">
+                <Setter Property="Margin" Value="0,8,10,0" />
+            </Style>
+            <Style x:Key="StepCard" TargetType="Border">
+                <Setter Property="Margin" Value="0,0,0,14" />
+                <Setter Property="Padding" Value="18" />
+                <Setter Property="Background" Value="#181818" />
+                <Setter Property="BorderBrush" Value="#333333" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="8" />
+            </Style>
+            <Style x:Key="StepTitle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="17" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="#1ED760" />
+                <Setter Property="Margin" Value="0,0,0,8" />
+            </Style>
+            <Style x:Key="FieldLabel" TargetType="TextBlock">
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="#D8D8D8" />
+                <Setter Property="Margin" Value="0,8,0,2" />
+            </Style>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,18">
+            <TextBlock FontSize="26"
+                       FontWeight="SemiBold"
+                       Text="Connect Spotify to SimHub" />
+            <TextBlock Margin="0,6,0,0"
+                       Foreground="#B3B3B3"
+                       Text="Follow these steps once using the Spotify account whose music you want to show in SimHub." />
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="1"
+                      VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <Border Style="{StaticResource StepCard}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource StepTitle}"
+                                   Text="1. Sign in to Spotify for Developers" />
+                        <TextBlock Text="Sign in with your normal Spotify account. Spotify currently requires Premium for this setup. Accept the Developer Terms if prompted." />
+                        <Button HorizontalAlignment="Left"
+                                Margin="0,8,10,0"
+                                Click="OpenDashboardButton_Click"
+                                Content="Open Spotify Developer Dashboard"
+                                Style="{StaticResource SpotifyPrimaryButton}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource StepCard}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource StepTitle}"
+                                   Text="2. Create the personal Spotify application" />
+                        <TextBlock Text="Select Create app and enter these values:" />
+
+                        <TextBlock Style="{StaticResource FieldLabel}"
+                                   Text="App name" />
+                        <TextBlock Text="SpotifySimHub" />
+
+                        <TextBlock Style="{StaticResource FieldLabel}"
+                                   Text="App description" />
+                        <TextBlock Text="Personal Spotify playback data for SimHub" />
+
+                        <TextBlock Style="{StaticResource FieldLabel}"
+                                   Text="Website" />
+                        <TextBlock Text="Leave blank if Spotify marks it as optional." />
+
+                        <TextBlock Style="{StaticResource FieldLabel}"
+                                   Text="Redirect URI" />
+                        <DockPanel Margin="0,2,0,0"
+                                   LastChildFill="True">
+                            <Button DockPanel.Dock="Right"
+                                    Margin="10,0,0,0"
+                                    Click="CopyRedirectUriButton_Click"
+                                    Content="Copy redirect URI" />
+                            <TextBox IsReadOnly="True"
+                                     Padding="8"
+                                     VerticalContentAlignment="Center"
+                                     Text="http://127.0.0.1:9877/callback" />
+                        </DockPanel>
+
+                        <TextBlock Style="{StaticResource FieldLabel}"
+                                   Text="APIs or SDKs" />
+                        <TextBlock Text="Select Web API." />
+
+                        <TextBlock Margin="0,10,0,0"
+                                   Foreground="#B3B3B3"
+                                   Text="Accept Spotify's Developer Terms and create the app. Keep the redirect URI exactly as shown above." />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource StepCard}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource StepTitle}"
+                                   Text="3. Copy and paste the Client ID" />
+                        <TextBlock Text="Open the new app, select Settings, and copy the value labelled Client ID. Paste it here:" />
+                        <DockPanel Margin="0,12,0,0"
+                                   LastChildFill="True">
+                            <Button x:Name="GuideSaveClientIdButton"
+                                    DockPanel.Dock="Right"
+                                    Margin="10,0,0,0"
+                                    Click="GuideSaveClientIdButton_Click"
+                                    Content="Save Client ID"
+                                    Style="{StaticResource SpotifyPrimaryButton}" />
+                            <PasswordBox x:Name="GuideClientIdBox"
+                                         MinHeight="38"
+                                         Padding="10,7"
+                                         VerticalContentAlignment="Center"
+                                         Background="#262626"
+                                         BorderBrush="#58B87B"
+                                         Foreground="#F5F5F5"
+                                         PasswordChanged="GuideClientIdBox_PasswordChanged" />
+                        </DockPanel>
+                        <TextBlock x:Name="GuideClientIdStatusText"
+                                   Margin="0,8,0,0"
+                                   Foreground="#B3B3B3"
+                                   Text="Paste the Client ID above and select Save Client ID." />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource StepCard}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource StepTitle}"
+                                   Text="4. Save and connect in SpotifySimHub" />
+                        <TextBlock Text="After the Client ID is saved, close this guide and select Connect in SpotifySimHub. Sign in and approve the Spotify browser prompt." />
+                        <TextBlock Margin="0,8,0,0"
+                                   Foreground="#B3B3B3"
+                                   Text="Your setup is saved. If Spotify asks you to connect again later, simply approve the browser prompt." />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource StepCard}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource StepTitle}"
+                                   Text="5. Add Spotify to a dashboard" />
+                        <TextBlock FontWeight="SemiBold"
+                                   Text="Track text" />
+                        <TextBlock Margin="0,4,0,0"
+                                   Text="In Dash Studio, add a Text component. Open the fx binding for Text, select Formula, and use:" />
+                        <TextBlock Margin="0,6,0,0"
+                                   FontFamily="Consolas"
+                                   Foreground="#7FE8A8"
+                                   Text="[SpotifyPlugin.Spotify.CurrentTrack]" />
+
+                        <TextBlock Margin="0,14,0,0"
+                                   FontWeight="SemiBold"
+                                   Text="Cover art on a computer, phone, or tablet" />
+                        <TextBlock Margin="0,4,0,0"
+                                   Text="Add an Image from file component. Open the fx binding for Image Path, select Formula, and use:" />
+                        <TextBlock Margin="0,6,0,0"
+                                   FontFamily="Consolas"
+                                   Foreground="#7FE8A8"
+                                   Text="[SpotifyPlugin.Spotify.CoverDash]" />
+
+                        <TextBlock Margin="0,14,0,0"
+                                   FontWeight="SemiBold"
+                                   Text="Other available properties" />
+                        <TextBlock Margin="0,4,0,0"
+                                   FontFamily="Consolas"
+                                   TextWrapping="Wrap"
+                                   Text="[SpotifyPlugin.Spotify.Artist]&#x0a;[SpotifyPlugin.Spotify.Track]&#x0a;[SpotifyPlugin.Spotify.Album]" />
+                        <TextBlock Margin="0,4,0,0"
+                                   Foreground="#B3B3B3"
+                                   Text="[SpotifyPlugin.Spotify.Cover] is the stable JPG path. [SpotifyPlugin.Spotify.CoverImage] is for local WPF image controls." />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Grid Grid.Row="2" Margin="0,16,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       VerticalAlignment="Center"
+                       Foreground="#8F8F8F"
+                       Text="The Spotify account steps open in your web browser." />
+            <Button Grid.Column="1"
+                    Margin="14,0,0,0"
+                    Click="CloseButton_Click"
+                    Content="Close guide" />
+        </Grid>
+    </Grid>
+</Window>

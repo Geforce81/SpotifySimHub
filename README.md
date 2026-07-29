@@ -2,7 +2,9 @@
 
 Bring the music you are listening to into your SimHub dashboards.
 
-SpotifySimHub is a Windows plugin that exposes the current Spotify track, artist, album, and cover art as native SimHub properties. Because it reads the Spotify account's playback state through the Web API, it can follow playback on Spotify Connect devices such as a PlayStation 5—not only audio playing on the SimHub computer.
+SpotifySimHub is a Windows plugin that exposes the current Spotify track, artist, album, and cover art as native SimHub properties. Because it reads the Spotify account's playback state through the Web API, it can follow playback on Spotify Connect devices such as a PlayStation 5. It is not limited to audio playing on the SimHub computer.
+
+![SpotifySimHub plugin settings in SimHub](Screenshot.png)
 
 ## Why this plugin exists
 
@@ -29,11 +31,14 @@ The goal is simple: music information should be as easy to place on a SimHub das
 - Combined `Artist - Track` text
 - Stable local cover-art path
 - WPF cover image for compatible SimHub controls
-- Spotify login using Authorization Code Flow with PKCE
-- Automatic refresh-token reuse and rotation
+- Secure Spotify browser login
+- Saved login between SimHub sessions
+- One-time automatic reauthorization when Spotify expires a saved login
 - DPAPI-protected token storage for the current Windows user
 - Clear Connect, Disconnect, and Refresh status controls
-- Rate-limit handling, bounded retry backoff, cancellation, and request timeouts
+- Built-in Spotify Developer setup guide with copyable redirect URI
+- A two-minute authorization timeout and immediate Cancel control
+- Adaptive polling, rate-limit handling, bounded retry backoff, cancellation, and request timeouts
 - No automatic deployment into SimHub during build
 
 ## How it works
@@ -49,22 +54,57 @@ flowchart LR
     B --> G["DPAPI-protected refresh token"]
 ```
 
-At startup, the plugin checks for a saved refresh token and attempts to restore the Spotify session. If no usable login exists, it reports `Login required` and waits for the user to press Connect. It never starts a new browser login automatically.
+At startup, the plugin checks for a saved refresh token and attempts to restore the Spotify session. If no login exists, it reports `Login required` and waits for the user to press Connect. A missing login never opens the browser automatically.
 
-Playback is polled at a controlled interval. Bearer authorization is added only to individual Spotify API requests, and never to the token endpoint. Cover art is accepted only from HTTPS image responses, limited to 5 MB, decoded before use, and written atomically to a stable cache file.
+Spotify refresh tokens expire six months after authorization. When Spotify explicitly rejects an existing token as expired, SpotifySimHub deletes it and opens the PKCE authorization flow once so the user can approve a new session. Ordinary network errors never open the browser.
 
-## Exposed SimHub properties
+Playback is polled at a controlled adaptive interval: no more often than every three seconds during active playback and every five seconds while playback is paused or absent. Spotify's `429 Retry-After` response and bounded failure backoff can slow polling further. Bearer authorization is added only to individual Spotify API requests, and never to the token endpoint. Cover art is accepted only from HTTPS image responses, limited to 5 MB, decoded before use, and written atomically to local cache files.
+
+## Dash Studio properties
+
+After SpotifySimHub is connected, these properties are available in the Dash Studio property picker. SimHub adds the `SpotifyPlugin` prefix when a property is used in a formula. Use the exact expressions shown below.
 
 | Property | Description |
 | --- | --- |
-| `Spotify.CurrentTrack` | Combined artist and track text |
-| `Spotify.Artist` | Current artist |
-| `Spotify.Track` | Current track title |
-| `Spotify.Album` | Current album |
-| `Spotify.Cover` | Stable path to the cached cover image |
-| `Spotify.CoverImage` | Frozen WPF image source for compatible controls |
+| `[SpotifyPlugin.Spotify.Album]` | Album name |
+| `[SpotifyPlugin.Spotify.Artist]` | Artist name |
+| `[SpotifyPlugin.Spotify.Cover]` | Stable local path to the cached JPG cover image |
+| `[SpotifyPlugin.Spotify.CoverDash]` | Changing JPG path for Dash Studio image components, including mobile dashboards |
+| `[SpotifyPlugin.Spotify.CoverImage]` | `BitmapImage` for local WPF image controls |
+| `[SpotifyPlugin.Spotify.CurrentTrack]` | Combined text in the format `Artist - Track` |
+| `[SpotifyPlugin.Spotify.Track]` | Track name only |
 
-These property names are compatibility contracts. Existing dashboards can continue using them across plugin updates.
+The plugin registers the `Spotify.*` property names, and SimHub exposes them in formulas below the `SpotifyPlugin` prefix. The six original property names remain compatibility contracts. `Spotify.CoverDash` is an additional property designed for Dash Studio.
+
+### Add track information to a dashboard
+
+1. Open **Dash Studio** and edit or create a dashboard.
+2. Add a **Text** component.
+3. Select the component and open the `fx` binding for **Text**.
+4. Select **Formula**.
+5. Select `SpotifyPlugin.Spotify.CurrentTrack` in the property picker, or enter:
+
+```text
+[SpotifyPlugin.Spotify.CurrentTrack]
+```
+
+Use `[SpotifyPlugin.Spotify.Artist]`, `[SpotifyPlugin.Spotify.Track]`, and `[SpotifyPlugin.Spotify.Album]` the same way when each value needs its own text component.
+
+### Add cover art to a computer or mobile dashboard
+
+1. Add an **Image from file** component. Use this specific component for a dynamic cover.
+2. Select it and open the `fx` binding for **Image Path**.
+3. Select **Formula**.
+4. Select `SpotifyPlugin.Spotify.CoverDash` in the property picker, or enter:
+
+```text
+[SpotifyPlugin.Spotify.CoverDash]
+```
+
+5. Resize the component and choose the preferred image stretch mode.
+6. Save the dashboard and open it on the computer, phone, or tablet.
+
+`[SpotifyPlugin.Spotify.CoverDash]` alternates between two local JPG files when the album art changes. This makes SimHub send each new image to web dashboards. `[SpotifyPlugin.Spotify.Cover]` remains the stable local JPG path for other PC integrations. `[SpotifyPlugin.Spotify.CoverImage]` is a WPF `BitmapImage` and is not transported to a phone browser.
 
 ## Requirements
 
@@ -73,7 +113,7 @@ These property names are compatibility contracts. Existing dashboards can contin
 - A Spotify Premium account
 - A Spotify developer application
 - .NET Framework 4.8
-- Visual Studio or Build Tools with the .NET Framework MSBuild toolchain when building from source
+- Visual Studio or Build Tools with the .NET Framework MSBuild toolchain only when building from source
 
 ## Why a Spotify developer application is required
 
@@ -105,21 +145,44 @@ http://127.0.0.1:9877/callback
 
 7. Select **Web API** when Spotify asks which API the app will use.
 8. Accept the terms and create the app.
-9. Open the app's settings and copy its Client ID into the local build configuration described below.
+9. Open the app's settings and copy the value labelled Client ID. Paste it into SpotifySimHub after installation.
 
-Do not copy the Client Secret. SpotifySimHub uses PKCE and neither needs nor accepts it. The loopback redirect URI must use `127.0.0.1`, must include port `9877`, and must match exactly.
+Keep the redirect URI exactly as shown in the guide. The Client ID remains the same, so the app setup only needs to be completed once.
 
 ## Install from a release
 
-There is no general verified release package yet. The current implementation embeds the configured Client ID at build time, so users who create their own Spotify application must build their own DLL from source.
+SpotifySimHub can be distributed in two neutral packages:
 
-A prebuilt DLL would use the builder's Spotify application and would work only for Spotify accounts permitted by that application's Development Mode configuration. It is therefore not a universal replacement for a personal build.
+- `SpotifySimHub-<version>-Setup.exe` asks for the SimHub installation folder, verifies that it contains `SimHubWPF.exe`, installs the plugin DLL, and supports upgrades and uninstall.
+- `SpotifySimHub-<version>-win.zip` contains the plugin DLL plus a quick-start guide and third-party notices. Extract its contents directly into the folder containing `SimHubWPF.exe`.
+
+After either installation, open SpotifySimHub under Additional plugins, enter the personal Spotify Client ID once, and press Connect. Users do not need Visual Studio, MSBuild, NuGet, or a Client Secret.
+
+The locally generated installer is not Authenticode-signed yet, so Windows may identify it as an unknown publisher. A public polished EXE release should be signed with a trusted code-signing certificate. The ZIP remains the transparent manual alternative.
 
 The first release should be published only after manual SimHub, Spotify authorization, and remote-device verification has passed.
 
+### Build the release packages
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\Build-Package.ps1 `
+  -RequireInstaller
+```
+
+The script:
+
+1. rebuilds Release with Client ID embedding explicitly disabled;
+2. rejects SimHub-owned assemblies in the output;
+3. stages the exact package allowlist;
+4. creates the ZIP and, when Inno Setup is available, the EXE installer;
+5. creates a SHA-256 checksum beside each artifact.
+
+Generated packages are written to `dist\` and are intentionally not tracked by Git.
+
 ## Build and install from source
 
-### 1. Configure local build values
+### 1. Configure the local SimHub build path
 
 Copy the example properties file:
 
@@ -131,11 +194,10 @@ Copy-Item `
 
 Edit `SpotifyClientId.local.props` and:
 
-1. replace `YOUR_SPOTIFY_CLIENT_ID` with your Spotify application client ID;
-2. set `SimHubInstallPath` to the SimHub installation directory;
-3. keep the trailing directory separator in the SimHub path.
+1. set `SimHubInstallPath` to the SimHub installation directory;
+2. keep the trailing directory separator in the SimHub path.
 
-The local file is ignored by Git. Never commit it, paste its value into source code, or include it in logs, screenshots, issues, or pull requests. The build stops with a clear error when the configuration is missing.
+`SpotifyClientId` is an optional developer-only Debug fallback. Release builds are neutral by default and users enter the Client ID in SimHub. The local file is ignored by Git. Never commit a configured value or include it in logs, screenshots, issues, or pull requests.
 
 ### 2. Restore dependencies
 
@@ -176,25 +238,23 @@ Build output:
 
 1. Close SimHub.
 2. Copy `SpotifySimHub.dll` from the selected output directory to the SimHub installation directory.
-3. Copy the adjacent `Newtonsoft.Json.dll` if the required version is not already deployed with the plugin.
-4. Start SimHub and open SpotifySimHub under Additional plugins.
+3. Start SimHub and open SpotifySimHub under Additional plugins.
 
 The project deliberately has no post-build deployment command. Building the project never modifies the SimHub installation.
+
+Newtonsoft.Json is distributed beside `SpotifySimHub.dll` as a plugin-owned runtime dependency. SimHub reflects over plugin types before constructing the plugin, so this dependency must be available while the plugin assembly is loaded.
 
 ## Using the plugin
 
 ### Connect
 
-Press **Connect** to start Spotify's browser login. The plugin:
+On first use, select **Open setup guide** for an in-plugin walkthrough of Spotify Developer account setup, the exact app fields, and the redirect URI. Step 3 contains its own masked Client ID field and **Save Client ID** button. The separate field on the main settings page remains available for manual setup and later changes.
 
-1. generates a cryptographically random PKCE verifier and state;
-2. listens on the local loopback callback;
-3. validates the returned state;
-4. exchanges the authorization code for tokens;
-5. saves the refresh token using Windows DPAPI;
-6. starts updating playback data.
+Press **Connect** to open Spotify in the browser. Sign in, approve the prompt, and return to SimHub. The plugin then starts updating the playback data and remembers the connection for future SimHub sessions.
 
-The authorization attempt times out if it is not completed.
+The authorization attempt times out after two minutes if it is not completed. If the Spotify browser tab is closed, select **Cancel connection** in SimHub to stop immediately and re-enable the other controls.
+
+If Spotify asks you to connect again later, simply approve the browser prompt.
 
 ### Refresh status
 
@@ -220,15 +280,19 @@ SpotifySimHub stores its runtime data under:
 %LOCALAPPDATA%\SpotifySimHub
 ```
 
-The refresh token is encrypted with Windows DPAPI for the current user. Existing plaintext `refresh_token.txt` files are migrated only after the protected replacement has been written, read back, and verified. Access tokens, refresh tokens, and the configured client ID are not written to plugin logs.
+The saved login is protected by Windows for the current user and remains on the computer. Login details and the configured Client ID are not written to plugin logs.
 
-Cover art is cached as a stable local file so dashboards do not need to depend directly on a changing remote URL.
+Cover art is cached as local JPG files so dashboards do not need to depend directly on a changing remote URL. `cover.jpg` provides a stable path, while two alternating Dash Studio files make changed artwork refresh on web and mobile dashboards.
 
 ## Troubleshooting
 
 ### Build reports missing local configuration
 
-Create `SpotifyClientId.local.props` from the example and configure both properties. Confirm the file is inside the `SpotifySimHub` project directory.
+Create `SpotifyClientId.local.props` from the example and configure `SimHubInstallPath`. A Spotify Client ID is no longer required at build time.
+
+### SpotifySimHub reports Spotify Client ID required
+
+Copy the value labelled Client ID from the Spotify Developer Dashboard, paste it into the masked field on the plugin settings page, and press **Save Client ID**.
 
 ### SimHub assemblies cannot be resolved
 
@@ -244,9 +308,9 @@ Verify that `SimHubInstallPath`:
 - Check that another application is not using local port `9877`.
 - Return to SimHub and retry if the authorization attempt timed out or was cancelled.
 
-### Login is required after restart
+### A browser opens after a previously working saved login expires
 
-The saved token may have been revoked or rejected. Press Connect to create a new authorized session.
+Approve the Spotify browser prompt to restore the saved connection.
 
 ### No track is displayed
 
@@ -264,16 +328,18 @@ The automated and offline verification covers:
 - PKCE generation;
 - authorization timeout configuration;
 - per-request bearer authorization;
+- expired-refresh-token detection and one-time reauthorization routing;
 - `429 Retry-After` handling;
+- adaptive three/five-second polling;
 - DPAPI token storage and plaintext migration;
 - cover content-type, size, decode, and atomic-write behavior;
-- preservation of all six SimHub property names.
+- preservation of all six original SimHub property names plus `Spotify.CoverDash`;
 
 Live SimHub loading, real Spotify authorization, dashboard rendering, and screenshots remain part of the manual release verification. See [MANUAL_TESTING.md](MANUAL_TESTING.md).
 
 ## Contributing
 
-Keep changes small and preserve the six public SimHub property names. Never commit:
+Keep changes small and preserve the six original public SimHub property names. Treat `Spotify.CoverDash` as an additional public compatibility contract. Never commit:
 
 - `SpotifyClientId.local.props`;
 - generated build configuration files;

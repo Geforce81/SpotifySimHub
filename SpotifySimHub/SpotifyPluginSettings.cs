@@ -2,6 +2,8 @@ namespace SpotifySimHub
 {
     public class SpotifyPluginSettings
     {
-        public int PollIntervalSeconds = 2;
+        public int PollIntervalSeconds = 3;
+
+        public string SpotifyClientId = "";
     }
 }

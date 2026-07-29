@@ -76,10 +76,33 @@ namespace SpotifySimHub
 
                     if (!response.IsSuccessStatusCode)
                     {
+                        SpotifyApiErrorKind errorKind =
+                            SpotifyApiErrorKind.Failed;
+
+                        try
+                        {
+                            JObject errorObject =
+                                JObject.Parse(json);
+
+                            if (string.Equals(
+                                    errorObject["error"]
+                                        ?.ToString(),
+                                    "invalid_grant",
+                                    StringComparison.Ordinal))
+                            {
+                                errorKind =
+                                    SpotifyApiErrorKind.InvalidGrant;
+                            }
+                        }
+                        catch (Newtonsoft.Json.JsonException)
+                        {
+                        }
+
                         throw new SpotifyApiException(
                             "Spotify refresh failed with HTTP status " +
                             (int)response.StatusCode +
-                            ".");
+                            ".",
+                            errorKind);
                     }
 
                     JObject tokenObject = JObject.Parse(json);
@@ -198,6 +221,9 @@ namespace SpotifySimHub
                     {
                         Status = SpotifyPlaybackStatus.Success,
                         StatusCode = response.StatusCode,
+                        IsPlaying =
+                            root["is_playing"]
+                                ?.ToObject<bool>() ?? false,
                         TrackName =
                             root["item"]?["name"]
                                 ?.ToString() ?? "",

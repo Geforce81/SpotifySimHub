@@ -78,6 +78,47 @@ namespace SpotifySimHub
             Plugin?.Disconnect();
         }
 
+        private void CancelButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            Plugin?.CancelConnectionAttempt();
+        }
+
+        private void SetupGuideButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            SpotifySetupGuideWindow guide =
+                new SpotifySetupGuideWindow(Plugin)
+                {
+                    Owner = Window.GetWindow(this)
+                };
+
+            guide.ShowDialog();
+        }
+
+        private void ClientIdBox_PasswordChanged(
+            object sender,
+            RoutedEventArgs e)
+        {
+            UpdateButtonState();
+        }
+
+        private void SaveClientIdButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            if (Plugin != null &&
+                Plugin.ConfigureClientId(
+                    ClientIdBox.Password))
+            {
+                ClientIdBox.Clear();
+            }
+
+            UpdateButtonState();
+        }
+
         private async void RefreshButton_Click(
             object sender,
             RoutedEventArgs e)
@@ -100,13 +141,22 @@ namespace SpotifySimHub
                     ? "Reconnect"
                     : "Connect";
 
-            ConnectButton.IsEnabled = !Plugin.IsBusy;
+            ConnectButton.IsEnabled =
+                !Plugin.IsBusy &&
+                Plugin.HasConfiguredClientId;
             DisconnectButton.IsEnabled =
                 !Plugin.IsBusy &&
                 (Plugin.IsConnected || Plugin.HasSavedLogin);
             RefreshButton.IsEnabled =
                 !Plugin.IsBusy &&
-                Plugin.HasSavedLogin;
+                Plugin.HasSavedLogin &&
+                Plugin.HasConfiguredClientId;
+            SaveClientIdButton.IsEnabled =
+                !Plugin.IsBusy &&
+                !string.IsNullOrWhiteSpace(
+                    ClientIdBox.Password);
+            CancelButton.IsEnabled =
+                Plugin.IsAuthorizationInProgress;
         }
     }
 }

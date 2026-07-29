@@ -1,0 +1,94 @@
+SpotifySimHub {VERSION}
+========================
+
+QUICK INSTALL
+
+Installer:
+1. Close SimHub.
+2. Run SpotifySimHub-{VERSION}-Setup.exe.
+3. Confirm the folder that contains SimHubWPF.exe.
+4. Finish the installation and start SimHub.
+
+ZIP:
+1. Close SimHub.
+2. Open the SimHub installation folder containing SimHubWPF.exe.
+3. Extract SpotifySimHub.dll and Newtonsoft.Json.dll from
+   SpotifySimHub-{VERSION}-win.zip directly into that folder.
+   Do not create an extra SpotifySimHub subfolder.
+4. Start SimHub.
+
+FIRST SPOTIFY CONNECTION
+
+1. Open Additional plugins in SimHub and select SpotifySimHub.
+2. Select Open setup guide for the visual walkthrough, or create a personal
+   app at https://developer.spotify.com/dashboard.
+3. Sign in with the same Spotify account used for playback and accept the
+   Developer Terms if prompted.
+4. Select Create app and enter:
+
+   App name: SpotifySimHub
+   Description: Personal Spotify playback data for SimHub
+   Website: Leave blank if optional
+   API or SDK: Web API
+
+5. Add this exact redirect URI:
+
+   http://127.0.0.1:9877/callback
+
+6. Create the app, open its Settings, and copy the value labelled Client ID.
+7. Paste the Client ID into step 3 of the setup guide and select Save Client ID.
+   The separate field on the SpotifySimHub page works the same way.
+8. Select Connect and approve the Spotify browser prompt.
+
+Your setup is saved. If Spotify asks you to connect again later, simply
+approve the browser prompt.
+
+If the browser is closed during Connect, select Cancel connection in SimHub.
+The connection attempt otherwise closes automatically after two minutes.
+
+DASH STUDIO PROPERTIES
+
+- [SpotifyPlugin.Spotify.Album]       Album name
+- [SpotifyPlugin.Spotify.Artist]      Artist name
+- [SpotifyPlugin.Spotify.Cover]       Local path to the cached JPG cover image
+- [SpotifyPlugin.Spotify.CoverDash]   Changing JPG path for Dash Studio and mobile dashboards
+- [SpotifyPlugin.Spotify.CoverImage]  BitmapImage for local WPF image controls
+- [SpotifyPlugin.Spotify.CurrentTrack]
+                                     Artist - Track
+- [SpotifyPlugin.Spotify.Track]       Track name only
+
+ADD TEXT TO A DASHBOARD
+
+1. Add a Text component in Dash Studio.
+2. Open the fx binding for Text and select Formula.
+3. Use [SpotifyPlugin.Spotify.CurrentTrack].
+4. Use [SpotifyPlugin.Spotify.Artist], [SpotifyPlugin.Spotify.Track], or
+   [SpotifyPlugin.Spotify.Album] for separate text.
+
+ADD COVER ART TO A COMPUTER, PHONE, OR TABLET
+
+1. Add an Image from file component.
+2. Open the fx binding for Image Path and select Formula.
+3. Use [SpotifyPlugin.Spotify.CoverDash].
+4. Save the dashboard.
+
+[SpotifyPlugin.Spotify.Cover] is the stable JPG path for other PC integrations.
+[SpotifyPlugin.Spotify.CoverImage] is intended for local WPF controls.
+
+The Spotify account and the owner of a Development Mode app must meet
+Spotify's current eligibility requirements. SpotifySimHub is intended for
+personal, non-commercial dashboard use.
+
+UPDATES
+
+Close SimHub, then run the newer installer or replace the files from the
+newer ZIP. Your local Client ID setting and protected Spotify login remain
+on the computer.
+
+FILES INSTALLED INTO SIMHUB
+
+- SpotifySimHub.dll
+- Newtonsoft.Json.dll
+
+Newtonsoft.Json is a plugin-owned runtime dependency installed beside the plugin.
+No SimHub-owned assemblies are included.

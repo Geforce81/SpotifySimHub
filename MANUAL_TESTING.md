@@ -6,12 +6,23 @@ Run this checklist only after Debug and Release builds succeed. These steps requ
 - [ ] No SDK demo UI is visible.
 - [ ] First startup without a token does not open a browser.
 - [ ] The initial status is `Login required`.
+- [ ] A neutral build asks for a Spotify Client ID in the settings page.
+- [ ] Open setup guide displays every Spotify app field and the exact redirect URI.
+- [ ] Open Spotify Developer Dashboard opens only after the user selects it.
+- [ ] Copy redirect URI copies the exact loopback callback.
+- [ ] The guide uses simple task-focused language without authentication implementation details.
+- [ ] The Client ID field is masked and never displays a saved value.
+- [ ] Step 3 of the guide saves a Client ID through its own masked field.
+- [ ] Saving a Client ID enables Connect.
 - [ ] Connect starts the Spotify login.
+- [ ] Closing the browser and selecting Cancel connection stops the listener and re-enables the controls.
+- [ ] An abandoned authorization times out after two minutes without hanging SimHub.
 - [ ] The loopback callback completes successfully.
 - [ ] The settings page reports `Connected`.
 - [ ] Artist, track, and album are displayed.
 - [ ] Cover art is displayed.
-- [ ] All six documented SimHub properties work in a dashboard.
+- [ ] All seven documented SimHub properties work in their intended controls.
+- [ ] `[SpotifyPlugin.Spotify.CoverDash]` updates an Image from file component on both desktop and mobile dashboards when the track changes.
 - [ ] Restarting SimHub reuses the saved refresh token.
 - [ ] Restart does not require a new browser login.
 - [ ] No active playback produces the expected status.
@@ -20,5 +31,15 @@ Run this checklist only after Debug and Release builds succeed. These steps requ
 - [ ] Disconnect clears the token and playback data.
 - [ ] Restart after Disconnect does not open a browser.
 - [ ] Reconnect succeeds.
+- [ ] Revoking or expiring the saved authorization causes one automatic PKCE reauthorization attempt after `invalid_grant`.
+- [ ] A missing token or ordinary network failure does not open a browser.
+- [ ] Active playback polls no more often than every three seconds.
+- [ ] Paused or absent playback polls no more often than every five seconds.
 - [ ] SimHub closes without a hanging listener or plugin error.
 - [ ] Logs contain no access token, refresh token, or client ID.
+- [ ] The ZIP contains only `SpotifySimHub.dll`, `Newtonsoft.Json.dll`, `INSTALL.txt`, and `THIRD-PARTY-NOTICES.txt`.
+- [ ] Extracting the ZIP directly beside `SimHubWPF.exe` loads the plugin.
+- [ ] The EXE rejects a folder that does not contain `SimHubWPF.exe`.
+- [ ] The EXE installs into the selected SimHub folder and supports an in-place upgrade.
+- [ ] Uninstall removes SpotifySimHub without removing SimHub-owned assemblies.
+- [ ] Published package checksums match the downloaded artifacts.
