@@ -2,16 +2,17 @@
 
 Bring the music you are listening to into your SimHub dashboards.
 
-SpotifySimHub is a Windows plugin that exposes the current Spotify track, artist, album, and cover art as native SimHub properties. Dashboard authors can use those properties in overlays, button boxes, secondary displays, streaming layouts, or any other SimHub-compatible design.
+SpotifySimHub is a Windows plugin that exposes the current Spotify track, artist, album, and cover art as native SimHub properties. Because it reads the Spotify account's playback state through the Web API, it can follow playback on Spotify Connect devices such as a PlayStation 5—not only audio playing on the SimHub computer.
 
 ## Why this plugin exists
 
-SimHub is excellent at combining telemetry and external data into one dashboard, but Spotify playback information is not available as a built-in data source. That leaves users with awkward workarounds: separate browser overlays, manually updated text, or custom scripts that do not behave like normal SimHub properties.
+SimHub is excellent at combining telemetry and external data into one dashboard, but Spotify playback information is not available as a built-in data source. That leaves users with awkward workarounds: manually updated text, device-specific integrations, or custom scripts that do not behave like normal SimHub properties.
 
 SpotifySimHub fills that gap. It provides one small, local integration that:
 
 - behaves like a regular SimHub plugin;
 - works with existing dashboard expressions and image controls;
+- follows account-level playback across supported Spotify Connect devices;
 - keeps the property names stable across plugin updates;
 - reconnects with a saved Spotify session;
 - does not require a client secret;
@@ -69,35 +70,52 @@ These property names are compatibility contracts. Existing dashboards can contin
 
 - Windows
 - SimHub 9.x
-- A Spotify account
+- A Spotify Premium account
 - A Spotify developer application
 - .NET Framework 4.8
 - Visual Studio or Build Tools with the .NET Framework MSBuild toolchain when building from source
 
+## Why a Spotify developer application is required
+
+Spotify authorization has two separate identities:
+
+1. your normal Spotify account identifies the listener and grants access to the current playback state;
+2. a Client ID identifies SpotifySimHub as the application requesting that access.
+
+The plugin uses Authorization Code Flow with PKCE, so it never needs a Client Secret. A Client ID is still required by Spotify for every authorization request.
+
+New Spotify applications run in Development Mode. Spotify currently limits these applications to personal development and a small allowlist, which makes one shared Client ID unsuitable for a generally distributed community plugin. A personal SpotifySimHub build therefore uses a Client ID created under the user's own Spotify account.
+
+This extra setup is what allows SpotifySimHub to read playback from the Spotify account rather than only inspecting local Windows audio. It is also why the plugin can detect a track playing on a PlayStation 5 or another supported Spotify Connect device.
+
+See [INSTALLATION.md](INSTALLATION.md) for the complete guided setup.
+
 ## Spotify application setup
 
-Create an application in the Spotify Developer Dashboard and add this exact redirect URI:
+1. Sign in to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) with the same Spotify account used for playback.
+2. Accept the current Spotify Developer Terms if prompted.
+3. Select **Create app**.
+4. Enter an app name such as `SpotifySimHub`.
+5. Enter a short description such as `Personal Spotify playback data for SimHub`.
+6. Add this exact redirect URI:
 
 ```text
 http://127.0.0.1:9877/callback
 ```
 
-SpotifySimHub uses PKCE, so only the application's client ID is required. Do not create, copy, or store a client secret for this plugin.
+7. Select **Web API** when Spotify asks which API the app will use.
+8. Accept the terms and create the app.
+9. Open the app's settings and copy its Client ID into the local build configuration described below.
+
+Do not copy the Client Secret. SpotifySimHub uses PKCE and neither needs nor accepts it. The loopback redirect URI must use `127.0.0.1`, must include port `9877`, and must match exactly.
 
 ## Install from a release
 
-There is no verified release package yet. The first release should be published only after the manual SimHub and Spotify verification checklist has passed.
+There is no general verified release package yet. The current implementation embeds the configured Client ID at build time, so users who create their own Spotify application must build their own DLL from source.
 
-When a verified release is available:
+A prebuilt DLL would use the builder's Spotify application and would work only for Spotify accounts permitted by that application's Development Mode configuration. It is therefore not a universal replacement for a personal build.
 
-1. Close SimHub.
-2. Download the release package.
-3. Copy `SpotifySimHub.dll` and the included plugin-owned `Newtonsoft.Json.dll` into the SimHub installation directory.
-4. Start SimHub.
-5. Open **Additional plugins → SpotifySimHub**.
-6. Press **Connect** and complete the Spotify login.
-
-Do not copy SimHub-hosted assemblies such as `SimHub.Plugins.dll`, `SimHub.Logging.dll`, `GameReaderCommon.dll`, or `log4net.dll` from a build directory.
+The first release should be published only after manual SimHub, Spotify authorization, and remote-device verification has passed.
 
 ## Build and install from source
 
