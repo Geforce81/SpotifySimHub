@@ -151,16 +151,16 @@ Keep the redirect URI exactly as shown in the guide. The Client ID remains the s
 
 ## Install from a release
 
-SpotifySimHub can be distributed in two neutral packages:
+Download the current installer or ZIP package from the [latest SpotifySimHub release](https://github.com/Geforce81/SpotifySimHub/releases/latest).
+
+SpotifySimHub is distributed in two neutral packages:
 
 - `SpotifySimHub-<version>-Setup.exe` asks for the SimHub installation folder, verifies that it contains `SimHubWPF.exe`, installs the plugin DLL, and supports upgrades and uninstall.
 - `SpotifySimHub-<version>-win.zip` contains the plugin DLL plus a quick-start guide and third-party notices. Extract its contents directly into the folder containing `SimHubWPF.exe`.
 
 After either installation, open SpotifySimHub under Additional plugins, enter the personal Spotify Client ID once, and press Connect. Users do not need Visual Studio, MSBuild, NuGet, or a Client Secret.
 
-The locally generated installer is not Authenticode-signed yet, so Windows may identify it as an unknown publisher. A public polished EXE release should be signed with a trusted code-signing certificate. The ZIP remains the transparent manual alternative.
-
-The first release should be published only after manual SimHub, Spotify authorization, and remote-device verification has passed.
+The published EXE installer is not Authenticode-signed yet, so Windows may identify it as an unknown publisher. Verify the provided SHA-256 checksum if desired. The ZIP remains the transparent manual alternative.
 
 ### Build the release packages
 
@@ -335,7 +335,7 @@ The automated and offline verification covers:
 - cover content-type, size, decode, and atomic-write behavior;
 - preservation of all six original SimHub property names plus `Spotify.CoverDash`;
 
-Live SimHub loading, real Spotify authorization, dashboard rendering, and screenshots remain part of the manual release verification. See [MANUAL_TESTING.md](MANUAL_TESTING.md).
+Version 1.0.0 has also been manually verified in SimHub for plugin loading, Spotify authorization, metadata properties, dashboard rendering, and mobile cover updates. [MANUAL_TESTING.md](MANUAL_TESTING.md) remains the reusable verification checklist for future releases.
 
 ## Contributing
 

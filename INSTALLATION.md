@@ -80,6 +80,8 @@ An incorrect redirect URI prevents Spotify from returning control to the plugin 
 
 ## Step 2: Install SpotifySimHub
 
+Download the current packages from the [latest SpotifySimHub release](https://github.com/Geforce81/SpotifySimHub/releases/latest).
+
 Choose either release format:
 
 ### EXE installer
@@ -90,7 +92,7 @@ Choose either release format:
 4. Select the folder containing `SimHubWPF.exe` if SimHub is not in its default location.
 5. Finish the installation and start SimHub.
 
-The installer supports upgrades and uninstall. A locally generated installer is not Authenticode-signed, so Windows may show an unknown-publisher warning until the project has a trusted code-signing certificate.
+The installer supports upgrades and uninstall. The published installer is currently not Authenticode-signed, so Windows may show an unknown-publisher warning until the project has a trusted code-signing certificate. Verify the provided SHA-256 checksum if desired.
 
 ### ZIP package
 
@@ -101,9 +103,9 @@ The installer supports upgrades and uninstall. A locally generated installer is 
 5. Do not create an extra SpotifySimHub subfolder.
 6. Start SimHub and open **Additional plugins**.
 
-No verified release archive has been published yet. Until manual release verification is complete, build the current source as described below.
+The verified version 1.0.0 packages and their SHA-256 checksums are available on the [version 1.0.0 release page](https://github.com/Geforce81/SpotifySimHub/releases/tag/v1.0.0).
 
-### Build the current source
+### Build the current source for development
 
 Clone the repository or download its source archive. Open PowerShell in the repository root.
 
