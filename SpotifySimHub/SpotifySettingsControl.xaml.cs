@@ -129,6 +129,36 @@ namespace SpotifySimHub
             }
         }
 
+        private async void PreviousTrackButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            if (Plugin != null)
+            {
+                await Plugin.PreviousTrackAsync();
+            }
+        }
+
+        private async void TogglePlaybackButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            if (Plugin != null)
+            {
+                await Plugin.TogglePlaybackAsync();
+            }
+        }
+
+        private async void NextTrackButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            if (Plugin != null)
+            {
+                await Plugin.NextTrackAsync();
+            }
+        }
+
         private void UpdateButtonState()
         {
             if (Plugin == null)
@@ -157,6 +187,15 @@ namespace SpotifySimHub
                     ClientIdBox.Password);
             CancelButton.IsEnabled =
                 Plugin.IsAuthorizationInProgress;
+            PreviousTrackButton.IsEnabled =
+                !Plugin.IsBusy &&
+                Plugin.IsConnected;
+            TogglePlaybackButton.IsEnabled =
+                !Plugin.IsBusy &&
+                Plugin.IsConnected;
+            NextTrackButton.IsEnabled =
+                !Plugin.IsBusy &&
+                Plugin.IsConnected;
         }
     }
 }

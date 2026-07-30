@@ -32,6 +32,12 @@ namespace SpotifySimHub
 
         public bool IsPlaying { get; set; }
 
+        public bool HasProgress { get; set; }
+
+        public long ProgressMs { get; set; }
+
+        public long DurationMs { get; set; }
+
         public string TrackName { get; set; } = "";
 
         public string ArtistName { get; set; } = "";
@@ -39,6 +45,29 @@ namespace SpotifySimHub
         public string AlbumName { get; set; } = "";
 
         public string CoverUrl { get; set; } = "";
+    }
+
+    internal enum SpotifyPlaybackCommand
+    {
+        Play,
+        Pause,
+        Next,
+        Previous
+    }
+
+    internal sealed class SpotifyPlaybackCommandResult
+    {
+        public HttpStatusCode StatusCode { get; set; }
+
+        public TimeSpan? RetryAfter { get; set; }
+
+        public bool IsSuccess
+        {
+            get
+            {
+                return StatusCode == HttpStatusCode.NoContent;
+            }
+        }
     }
 
     internal sealed class SpotifyCoverArtResult

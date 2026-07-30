@@ -77,7 +77,9 @@ namespace SpotifySimHub
                     string expectedState = CreateState();
 
                     string scope =
-                        "user-read-currently-playing user-read-playback-state";
+                        "user-read-currently-playing " +
+                        "user-read-playback-state " +
+                        "user-modify-playback-state";
 
                     string authorizationUrl =
                         "https://accounts.spotify.com/authorize" +

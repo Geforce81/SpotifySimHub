@@ -3,6 +3,7 @@ using SimHub.Plugins;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
@@ -21,6 +22,48 @@ namespace SpotifySimHub
         IWPFSettingsV2,
         INotifyPropertyChanged
     {
+        private sealed class PlaybackSnapshot
+        {
+            public static readonly PlaybackSnapshot Empty =
+                new PlaybackSnapshot(
+                    progressMs: 0,
+                    durationMs: 0,
+                    isPlaying: false,
+                    hasProgress: false,
+                    capturedTimestamp: 0);
+
+            public PlaybackSnapshot(
+                long progressMs,
+                long durationMs,
+                bool isPlaying,
+                bool hasProgress,
+                long capturedTimestamp)
+            {
+                ProgressMs = progressMs;
+                DurationMs = durationMs;
+                IsPlaying = isPlaying;
+                HasProgress = hasProgress;
+                CapturedTimestamp = capturedTimestamp;
+            }
+
+            public long ProgressMs { get; }
+
+            public long DurationMs { get; }
+
+            public bool IsPlaying { get; }
+
+            public bool HasProgress { get; }
+
+            public long CapturedTimestamp { get; }
+        }
+
+        private enum PlaybackControlRequest
+        {
+            Toggle,
+            Next,
+            Previous
+        }
+
         public SpotifyPluginSettings Settings;
 
         public PluginManager PluginManager { get; set; }
@@ -45,6 +88,7 @@ namespace SpotifySimHub
         private bool hasConfiguredClientId;
         private string clientIdConfigurationStatus =
             "Spotify Client ID required";
+        private string playbackControlStatus = "Disconnected";
 
         public string CurrentTrack
         {
@@ -97,7 +141,16 @@ namespace SpotifySimHub
         public bool IsConnected
         {
             get => isConnected;
-            private set => SetProperty(ref isConnected, value);
+            private set
+            {
+                if (SetProperty(ref isConnected, value))
+                {
+                    PlaybackControlStatus =
+                        value
+                            ? "Ready"
+                            : "Playback controls unavailable";
+                }
+            }
         }
 
         public bool HasSavedLogin
@@ -148,6 +201,79 @@ namespace SpotifySimHub
                     value);
         }
 
+        public string PlaybackControlStatus
+        {
+            get => playbackControlStatus;
+            private set =>
+                SetProperty(
+                    ref playbackControlStatus,
+                    value);
+        }
+
+        public long ProgressMs =>
+            GetInterpolatedProgressMs();
+
+        public long DurationMs =>
+            Volatile.Read(
+                ref playbackSnapshot).DurationMs;
+
+        public double ProgressPercent
+        {
+            get
+            {
+                PlaybackSnapshot snapshot =
+                    Volatile.Read(
+                        ref playbackSnapshot);
+                long durationMs =
+                    snapshot.DurationMs;
+
+                if (durationMs <= 0)
+                {
+                    return 0;
+                }
+
+                return Math.Max(
+                    0,
+                    Math.Min(
+                        100,
+                        GetInterpolatedProgressMs(
+                            snapshot) *
+                        100.0 /
+                        durationMs));
+            }
+        }
+
+        public string ProgressText =>
+            FormatPlaybackTime(ProgressMs);
+
+        public string DurationText =>
+            FormatPlaybackTime(DurationMs);
+
+        public string PlaybackTime
+        {
+            get
+            {
+                PlaybackSnapshot snapshot =
+                    Volatile.Read(
+                        ref playbackSnapshot);
+
+                return
+                    FormatPlaybackTime(
+                        GetInterpolatedProgressMs(
+                            snapshot)) +
+                    " / " +
+                    FormatPlaybackTime(
+                        snapshot.DurationMs);
+            }
+        }
+
+        public bool IsPlaying =>
+            Volatile.Read(
+                ref playbackSnapshot).IsPlaying;
+
+        public string PlayPauseText =>
+            IsPlaying ? "Pause" : "Play";
+
         private readonly HttpClient httpClient = new HttpClient();
 
         private static readonly string BuildClientId =
@@ -165,7 +291,13 @@ namespace SpotifySimHub
         private DateTime accessTokenExpiresUtc = DateTime.MinValue;
 
         private readonly object lifecycleLock = new object();
+        private readonly object stateCommitLock = new object();
         private readonly object tokenLock = new object();
+        private readonly HashSet<Task> liveOperations =
+            new HashSet<Task>();
+        private readonly List<CancellationTokenSource>
+            retiredSessionSources =
+                new List<CancellationTokenSource>();
         private readonly SemaphoreSlim loginSemaphore =
             new SemaphoreSlim(1, 1);
         private readonly SemaphoreSlim refreshSemaphore =
@@ -182,13 +314,19 @@ namespace SpotifySimHub
         private Task startupTask = Task.CompletedTask;
         private Task connectionTask = Task.CompletedTask;
         private Task playbackTask = Task.CompletedTask;
+        private Task playbackControlTask = Task.CompletedTask;
+        private PlaybackSnapshot playbackSnapshot =
+            PlaybackSnapshot.Empty;
+        private long lastProgressNotificationTimestamp;
+        private long lastProgressTextSecond = -1;
         private DateTime lastTrackRequest = DateTime.MinValue;
         private long nextPlaybackRequestUtcTicks;
+        private long nextPlaybackControlRequestUtcTicks;
         private int temporaryFailureCount;
         private int authenticationGeneration;
         private int busyOperationCount;
         private int automaticReauthorizationStarted;
-        private bool ending;
+        private volatile bool ending;
 
         public event PropertyChangedEventHandler PropertyChanged;
 
@@ -212,6 +350,210 @@ namespace SpotifySimHub
             PropertyChanged?.Invoke(
                 this,
                 new PropertyChangedEventArgs(propertyName));
+        }
+
+        private bool TryCommitState(
+            int operationGeneration,
+            CancellationToken cancellationToken,
+            Action commit)
+        {
+            if (commit == null)
+            {
+                throw new ArgumentNullException(
+                    nameof(commit));
+            }
+
+            lock (stateCommitLock)
+            {
+                if (ending ||
+                    cancellationToken.IsCancellationRequested ||
+                    operationGeneration !=
+                    Volatile.Read(
+                        ref authenticationGeneration))
+                {
+                    return false;
+                }
+
+                commit();
+                return true;
+            }
+        }
+
+        private Task StartTrackedOperation(
+            Func<Task> operationFactory)
+        {
+            if (operationFactory == null)
+            {
+                throw new ArgumentNullException(
+                    nameof(operationFactory));
+            }
+
+            TaskCompletionSource<bool> startSignal;
+            Task task;
+
+            lock (lifecycleLock)
+            {
+                if (ending ||
+                    pluginCancellation == null ||
+                    pluginCancellation.IsCancellationRequested)
+                {
+                    return Task.CompletedTask;
+                }
+
+                startSignal =
+                    new TaskCompletionSource<bool>();
+                task =
+                    RunTrackedOperationAsync(
+                        operationFactory,
+                        startSignal.Task);
+                RegisterLiveOperationLocked(
+                    task);
+            }
+
+            startSignal.SetResult(true);
+            return task;
+        }
+
+        private static async Task RunTrackedOperationAsync(
+            Func<Task> operationFactory,
+            Task startSignal)
+        {
+            await startSignal.ConfigureAwait(false);
+
+            Task operation =
+                operationFactory();
+
+            if (operation != null)
+            {
+                await operation.ConfigureAwait(false);
+            }
+        }
+
+        private void RegisterLiveOperationLocked(
+            Task task)
+        {
+            liveOperations.Add(task);
+
+            task.ContinueWith(
+                completedTask =>
+                {
+                    lock (lifecycleLock)
+                    {
+                        liveOperations.Remove(
+                            completedTask);
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private CancellationToken BeginNewSession(
+            Action resetState)
+        {
+            int operationGeneration;
+
+            return BeginNewSession(
+                resetState,
+                out operationGeneration);
+        }
+
+        private CancellationToken BeginNewSession(
+            Action resetState,
+            out int operationGeneration)
+        {
+            CancellationToken cancellationToken;
+
+            TryBeginNewSession(
+                expectedGeneration: null,
+                operationCancellationToken:
+                    CancellationToken.None,
+                resetState: resetState,
+                cancellationToken:
+                    out cancellationToken,
+                operationGeneration:
+                    out operationGeneration);
+
+            return cancellationToken;
+        }
+
+        private bool TryBeginNewSession(
+            int? expectedGeneration,
+            CancellationToken operationCancellationToken,
+            Action resetState,
+            out CancellationToken cancellationToken,
+            out int operationGeneration)
+        {
+            CancellationTokenSource previous = null;
+            bool started;
+
+            lock (stateCommitLock)
+            {
+                started =
+                    !ending &&
+                    pluginCancellation != null &&
+                    !pluginCancellation
+                        .IsCancellationRequested &&
+                    !operationCancellationToken
+                        .IsCancellationRequested &&
+                    (!expectedGeneration.HasValue ||
+                     expectedGeneration.Value ==
+                     Volatile.Read(
+                         ref authenticationGeneration));
+
+                if (started)
+                {
+                    Interlocked.Increment(
+                        ref authenticationGeneration);
+                    operationGeneration =
+                        Volatile.Read(
+                            ref authenticationGeneration);
+                }
+                else
+                {
+                    operationGeneration =
+                        Volatile.Read(
+                            ref authenticationGeneration);
+                }
+
+                if (!started)
+                {
+                    cancellationToken =
+                        new CancellationToken(true);
+                    return false;
+                }
+
+                lock (lifecycleLock)
+                {
+                    previous = sessionCancellation;
+                    sessionCancellation = null;
+
+                    if (previous != null)
+                    {
+                        retiredSessionSources.Add(
+                            previous);
+                    }
+                }
+
+                if (previous != null)
+                {
+                    previous.Cancel();
+                }
+
+                resetState?.Invoke();
+
+                lock (lifecycleLock)
+                {
+                    sessionCancellation =
+                        CancellationTokenSource
+                            .CreateLinkedTokenSource(
+                                pluginCancellation.Token);
+                    cancellationToken =
+                        sessionCancellation.Token;
+                }
+            }
+
+            return true;
         }
 
         private string SpotifyDataFolder =>
@@ -258,41 +600,48 @@ namespace SpotifySimHub
                 return true;
             }
 
-            Interlocked.Increment(
-                ref authenticationGeneration);
-            RenewSessionCancellation();
+            BeginNewSession(
+                () =>
+                {
+                    IsAuthorizationInProgress = false;
 
-            lock (tokenLock)
-            {
-                accessToken = "";
-                refreshToken = "";
-                accessTokenExpiresUtc =
-                    DateTime.MinValue;
-            }
+                    lock (tokenLock)
+                    {
+                        accessToken = "";
+                        refreshToken = "";
+                        accessTokenExpiresUtc =
+                            DateTime.MinValue;
+                    }
 
-            try
-            {
-                tokenStore?.Delete();
-            }
-            catch (Exception ex)
-            {
-                SimHub.Logging.Current.Error(
-                    "Could not clear the previous Spotify login. " +
-                    ex.GetType().Name);
-            }
+                    try
+                    {
+                        tokenStore?.Delete();
+                    }
+                    catch (Exception ex)
+                    {
+                        SimHub.Logging.Current.Error(
+                            "Could not clear the previous Spotify login. " +
+                            ex.GetType().Name);
+                    }
 
-            ConfigureSpotifyClients(
-                normalizedClientId);
-            Interlocked.Exchange(
-                ref automaticReauthorizationStarted,
-                0);
+                    ConfigureSpotifyClients(
+                        normalizedClientId);
+                    Interlocked.Exchange(
+                        ref automaticReauthorizationStarted,
+                        0);
+                    Interlocked.Exchange(
+                        ref nextPlaybackControlRequestUtcTicks,
+                        0);
 
-            ClearPlaybackAndCover();
-            ResetPlaybackBackoff();
-            HasSavedLogin = false;
-            IsConnected = false;
-            ConnectionStatus =
-                "Client ID saved. Press Connect.";
+                    ClearPlaybackAndCover();
+                    ResetPlaybackBackoff();
+                    HasSavedLogin = false;
+                    IsConnected = false;
+                    PlaybackControlStatus = "Disconnected";
+                    ConnectionStatus =
+                        "Client ID saved. Press Connect.";
+                });
+
             return true;
         }
 
@@ -344,16 +693,23 @@ namespace SpotifySimHub
         }
 
         private async Task<bool> RefreshAccessTokenAsync(
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            int refreshGeneration)
         {
-            int refreshGeneration = authenticationGeneration;
-
             await refreshSemaphore
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             try
             {
+                if (!TryCommitState(
+                        refreshGeneration,
+                        cancellationToken,
+                        () => { }))
+                {
+                    return false;
+                }
+
                 string savedRefreshToken;
 
                 lock (tokenLock)
@@ -363,22 +719,44 @@ namespace SpotifySimHub
 
                 if (string.IsNullOrEmpty(savedRefreshToken))
                 {
-                    IsConnected = false;
-                    ConnectionStatus = "Login required";
+                    TryCommitState(
+                        refreshGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            IsConnected = false;
+                            ConnectionStatus =
+                                "Login required";
+                        });
                     return false;
                 }
 
                 if (!HasConfiguredClientId ||
                     apiClient == null)
                 {
-                    IsConnected = false;
-                    ConnectionStatus =
-                        "Spotify Client ID required";
+                    TryCommitState(
+                        refreshGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            IsConnected = false;
+                            ConnectionStatus =
+                                "Spotify Client ID required";
+                        });
                     return false;
                 }
 
-                ConnectionStatus =
-                    "Refreshing Spotify session...";
+                if (!TryCommitState(
+                        refreshGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            ConnectionStatus =
+                                "Refreshing Spotify session...";
+                        }))
+                {
+                    return false;
+                }
 
                 SpotifyTokenResult tokenResult =
                     await apiClient.RefreshAccessTokenAsync(
@@ -388,17 +766,18 @@ namespace SpotifySimHub
 
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (refreshGeneration !=
-                    authenticationGeneration)
-                {
-                    return false;
-                }
-
                 if (string.IsNullOrEmpty(
                         tokenResult.AccessToken))
                 {
-                    IsConnected = false;
-                    ConnectionStatus = "Login required";
+                    TryCommitState(
+                        refreshGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            IsConnected = false;
+                            ConnectionStatus =
+                                "Login required";
+                        });
                     return false;
                 }
 
@@ -408,22 +787,35 @@ namespace SpotifySimHub
                         ? savedRefreshToken
                         : tokenResult.RefreshToken;
 
-                tokenStore.Save(tokenToPersist);
-                ApplyTokenResult(
-                    tokenResult,
-                    tokenToPersist);
+                return TryCommitState(
+                    refreshGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        tokenStore.Save(
+                            tokenToPersist);
+                        ApplyTokenResult(
+                            tokenResult,
+                            tokenToPersist);
 
-                HasSavedLogin = true;
-                IsConnected = true;
-                ConnectionStatus = "Connected";
-                return true;
+                        HasSavedLogin = true;
+                        IsConnected = true;
+                        PlaybackControlStatus = "Ready";
+                        ConnectionStatus = "Connected";
+                    });
             }
             catch (OperationCanceledException)
                 when (!cancellationToken.IsCancellationRequested)
             {
-                ConnectionStatus =
-                    "Spotify is temporarily unavailable";
-                ScheduleTemporaryFailureBackoff();
+                TryCommitState(
+                    refreshGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        ConnectionStatus =
+                            "Spotify is temporarily unavailable";
+                        ScheduleTemporaryFailureBackoff();
+                    });
 
                 SimHub.Logging.Current.Error(
                     "Spotify refresh request timed out.");
@@ -438,16 +830,12 @@ namespace SpotifySimHub
                 when (ex.Kind ==
                       SpotifyApiErrorKind.InvalidGrant)
             {
-                if (ending ||
-                    cancellationToken.IsCancellationRequested ||
-                    refreshGeneration !=
-                    authenticationGeneration)
+                if (!HandleExpiredAuthorization(
+                        refreshGeneration,
+                        cancellationToken))
                 {
                     return false;
                 }
-
-                HandleExpiredAuthorization();
-                QueueAutomaticReauthorization();
 
                 SimHub.Logging.Current.Info(
                     "The saved Spotify authorization expired; " +
@@ -457,8 +845,23 @@ namespace SpotifySimHub
             }
             catch (SpotifyApiException ex)
             {
-                IsConnected = false;
-                ConnectionStatus = "Login required";
+                TryCommitState(
+                    refreshGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        if (IsConnected)
+                        {
+                            ScheduleTemporaryFailureBackoff();
+                            ConnectionStatus =
+                                "Spotify is temporarily unavailable";
+                        }
+                        else
+                        {
+                            ConnectionStatus =
+                                "Login required";
+                        }
+                    });
 
                 SimHub.Logging.Current.Error(
                     "Spotify refresh failed. " +
@@ -468,9 +871,15 @@ namespace SpotifySimHub
             }
             catch (Exception ex)
             {
-                IsConnected = false;
-                ConnectionStatus =
-                    "Spotify is temporarily unavailable";
+                TryCommitState(
+                    refreshGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        ScheduleTemporaryFailureBackoff();
+                        ConnectionStatus =
+                            "Spotify is temporarily unavailable";
+                    });
 
                 SimHub.Logging.Current.Error(
                     "Spotify refresh failed. " +
@@ -484,54 +893,95 @@ namespace SpotifySimHub
             }
         }
 
-        private void HandleExpiredAuthorization()
+        private bool HandleExpiredAuthorization(
+            int expectedGeneration,
+            CancellationToken cancellationToken)
         {
-            Interlocked.Increment(
-                ref authenticationGeneration);
-            RenewSessionCancellation();
+            CancellationToken newCancellationToken;
+            int newGeneration;
 
-            lock (tokenLock)
+            bool transitioned =
+                TryBeginNewSession(
+                expectedGeneration,
+                cancellationToken,
+                () =>
+                {
+                    IsAuthorizationInProgress = false;
+
+                    lock (tokenLock)
+                    {
+                        accessToken = "";
+                        refreshToken = "";
+                        accessTokenExpiresUtc =
+                            DateTime.MinValue;
+                    }
+
+                    try
+                    {
+                        tokenStore?.Delete();
+                    }
+                    catch (Exception ex)
+                    {
+                        SimHub.Logging.Current.Error(
+                            "Could not remove the expired Spotify login. " +
+                            ex.GetType().Name);
+                    }
+
+                    HasSavedLogin = false;
+                    IsConnected = false;
+                    ClearPlaybackAndCover();
+                    ResetPlaybackBackoff();
+                    Interlocked.Exchange(
+                        ref nextPlaybackControlRequestUtcTicks,
+                        0);
+                    PlaybackControlStatus =
+                        "Spotify login required";
+                    ConnectionStatus =
+                        "Spotify login expired. " +
+                        "Reauthorization required.";
+                },
+                out newCancellationToken,
+                out newGeneration);
+
+            if (transitioned)
             {
-                accessToken = "";
-                refreshToken = "";
-                accessTokenExpiresUtc =
-                    DateTime.MinValue;
+                QueueAutomaticReauthorization(
+                    newCancellationToken,
+                    newGeneration);
             }
 
-            try
-            {
-                tokenStore?.Delete();
-            }
-            catch (Exception ex)
-            {
-                SimHub.Logging.Current.Error(
-                    "Could not remove the expired Spotify login. " +
-                    ex.GetType().Name);
-            }
-
-            HasSavedLogin = false;
-            IsConnected = false;
-            ClearPlaybackAndCover();
-            ResetPlaybackBackoff();
-            ConnectionStatus =
-                "Spotify login expired. Reauthorization required.";
+            return transitioned;
         }
 
-        private void QueueAutomaticReauthorization()
+        private void QueueAutomaticReauthorization(
+            CancellationToken cancellationToken,
+            int operationGeneration)
         {
-            if (ending ||
-                !HasConfiguredClientId ||
-                Interlocked.CompareExchange(
-                    ref automaticReauthorizationStarted,
-                    1,
-                    0) != 0)
+            bool shouldStart = false;
+
+            if (!TryCommitState(
+                    operationGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        shouldStart =
+                            HasConfiguredClientId &&
+                            Interlocked.CompareExchange(
+                                ref automaticReauthorizationStarted,
+                                1,
+                                0) == 0;
+                    }) ||
+                !shouldStart)
             {
                 return;
             }
 
             Task task =
-                AutomaticReauthorizationAsync(
-                    GetSessionCancellationToken());
+                StartTrackedOperation(
+                    () =>
+                        AutomaticReauthorizationAsync(
+                            cancellationToken,
+                            operationGeneration));
 
             lock (lifecycleLock)
             {
@@ -540,18 +990,30 @@ namespace SpotifySimHub
         }
 
         private async Task AutomaticReauthorizationAsync(
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            int operationGeneration)
         {
             await Task.Yield();
             BeginBusy();
 
             try
             {
-                ConnectionStatus =
-                    "Spotify login expired. Opening authorization...";
+                if (!TryCommitState(
+                        operationGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            ConnectionStatus =
+                                "Spotify login expired. " +
+                                "Opening authorization...";
+                        }))
+                {
+                    return;
+                }
 
                 await LoginToSpotifyAsync(
-                        cancellationToken)
+                        cancellationToken,
+                        operationGeneration)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -559,37 +1021,66 @@ namespace SpotifySimHub
             }
             finally
             {
-                Interlocked.Exchange(
-                    ref automaticReauthorizationStarted,
-                    0);
+                TryCommitState(
+                    operationGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        Interlocked.Exchange(
+                            ref automaticReauthorizationStarted,
+                            0);
+                    });
                 EndBusy();
             }
         }
 
         private async Task<bool> LoginToSpotifyAsync(
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            int loginGeneration)
         {
             await loginSemaphore
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            int loginGeneration = authenticationGeneration;
             bool authorizationStarted = false;
+            bool refreshSemaphoreHeld = false;
 
             try
             {
+                await refreshSemaphore
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                refreshSemaphoreHeld = true;
+
                 if (!HasConfiguredClientId ||
                     oauthClient == null)
                 {
-                    IsConnected = false;
-                    ConnectionStatus =
-                        "Spotify Client ID required";
+                    TryCommitState(
+                        loginGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            IsConnected = false;
+                            ConnectionStatus =
+                                "Spotify Client ID required";
+                        });
                     return false;
                 }
 
-                IsAuthorizationInProgress = true;
+                if (!TryCommitState(
+                        loginGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            IsAuthorizationInProgress = true;
+                            ConnectionStatus =
+                                "Connecting to Spotify...";
+                        }))
+                {
+                    return false;
+                }
+
                 authorizationStarted = true;
-                ConnectionStatus = "Connecting to Spotify...";
 
                 SpotifyTokenResult tokenResult =
                     await oauthClient.AuthorizeAsync(
@@ -598,30 +1089,44 @@ namespace SpotifySimHub
 
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (loginGeneration != authenticationGeneration)
-                {
-                    return false;
-                }
-
                 if (string.IsNullOrEmpty(
                         tokenResult.AccessToken) ||
                     string.IsNullOrEmpty(
                         tokenResult.RefreshToken))
                 {
-                    ConnectionStatus =
-                        "Spotify authorization failed";
+                    TryCommitState(
+                        loginGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            ConnectionStatus =
+                                "Spotify authorization failed";
+                        });
                     return false;
                 }
 
-                tokenStore.Save(
-                    tokenResult.RefreshToken);
-                ApplyTokenResult(
-                    tokenResult,
-                    tokenResult.RefreshToken);
+                if (!TryCommitState(
+                        loginGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            tokenStore.Save(
+                                tokenResult.RefreshToken);
+                            ApplyTokenResult(
+                                tokenResult,
+                                tokenResult.RefreshToken);
 
-                HasSavedLogin = true;
-                IsConnected = true;
-                ConnectionStatus = "Connected";
+                            HasSavedLogin = true;
+                            IsConnected = true;
+                            PlaybackControlStatus = "Ready";
+                            ConnectionStatus = "Connected";
+                        }))
+                {
+                    return false;
+                }
+
+                refreshSemaphore.Release();
+                refreshSemaphoreHeld = false;
 
                 await UpdatePlaybackAsync(
                         cancellationToken)
@@ -632,9 +1137,15 @@ namespace SpotifySimHub
             catch (OperationCanceledException)
                 when (!cancellationToken.IsCancellationRequested)
             {
-                IsConnected = false;
-                ConnectionStatus =
-                    "Spotify authorization failed";
+                TryCommitState(
+                    loginGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        IsConnected = false;
+                        ConnectionStatus =
+                            "Spotify authorization failed";
+                    });
 
                 SimHub.Logging.Current.Error(
                     "Spotify login request timed out.");
@@ -647,15 +1158,21 @@ namespace SpotifySimHub
             }
             catch (SpotifyAuthenticationException ex)
             {
-                IsConnected = false;
-                ConnectionStatus =
-                    ex.Kind ==
-                    SpotifyAuthenticationErrorKind.TimedOut
-                        ? "Spotify authorization timed out"
-                        : ex.Kind ==
-                          SpotifyAuthenticationErrorKind.Cancelled
-                            ? "Spotify authorization was cancelled"
-                            : "Spotify authorization failed";
+                TryCommitState(
+                    loginGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        IsConnected = false;
+                        ConnectionStatus =
+                            ex.Kind ==
+                            SpotifyAuthenticationErrorKind.TimedOut
+                                ? "Spotify authorization timed out"
+                                : ex.Kind ==
+                                  SpotifyAuthenticationErrorKind.Cancelled
+                                    ? "Spotify authorization was cancelled"
+                                    : "Spotify authorization failed";
+                    });
 
                 SimHub.Logging.Current.Error(
                     "Spotify authorization did not complete. " +
@@ -667,9 +1184,15 @@ namespace SpotifySimHub
             }
             catch (Exception ex)
             {
-                IsConnected = false;
-                ConnectionStatus =
-                    "Spotify authorization failed";
+                TryCommitState(
+                    loginGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        IsConnected = false;
+                        ConnectionStatus =
+                            "Spotify authorization failed";
+                    });
 
                 SimHub.Logging.Current.Error(
                     "Spotify login failed. " +
@@ -681,7 +1204,18 @@ namespace SpotifySimHub
             {
                 if (authorizationStarted)
                 {
-                    IsAuthorizationInProgress = false;
+                    TryCommitState(
+                        loginGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            IsAuthorizationInProgress = false;
+                        });
+                }
+
+                if (refreshSemaphoreHeld)
+                {
+                    refreshSemaphore.Release();
                 }
 
                 loginSemaphore.Release();
@@ -695,9 +1229,25 @@ namespace SpotifySimHub
                 return Task.CompletedTask;
             }
 
+            CancellationToken cancellationToken =
+                BeginNewSession(
+                    () =>
+                    {
+                        IsAuthorizationInProgress = false;
+                        Interlocked.Exchange(
+                            ref automaticReauthorizationStarted,
+                            0);
+                        Interlocked.Exchange(
+                            ref nextPlaybackControlRequestUtcTicks,
+                            0);
+                    },
+                    out int operationGeneration);
             Task task =
-                ConnectCoreAsync(
-                    GetSessionCancellationToken());
+                StartTrackedOperation(
+                    () =>
+                        ConnectCoreAsync(
+                            cancellationToken,
+                            operationGeneration));
 
             lock (lifecycleLock)
             {
@@ -715,57 +1265,67 @@ namespace SpotifySimHub
                 return;
             }
 
-            Interlocked.Increment(
-                ref authenticationGeneration);
-            RenewSessionCancellation();
-            Interlocked.Exchange(
-                ref automaticReauthorizationStarted,
-                0);
+            BeginNewSession(
+                () =>
+                {
+                    IsAuthorizationInProgress = false;
+                    Interlocked.Exchange(
+                        ref automaticReauthorizationStarted,
+                        0);
+                    Interlocked.Exchange(
+                        ref nextPlaybackControlRequestUtcTicks,
+                        0);
 
-            ConnectionStatus =
-                IsConnected
-                    ? "Connected"
-                    : HasSavedLogin
-                        ? "Spotify authorization was cancelled; " +
-                          "saved login retained"
-                        : "Spotify authorization was cancelled";
+                    ConnectionStatus =
+                        IsConnected
+                            ? "Connected"
+                            : HasSavedLogin
+                                ? "Spotify authorization was cancelled; " +
+                                  "saved login retained"
+                                : "Spotify authorization was cancelled";
+                });
         }
 
         public void Disconnect()
         {
-            Interlocked.Increment(
-                ref authenticationGeneration);
+            BeginNewSession(
+                () =>
+                {
+                    IsAuthorizationInProgress = false;
+                    IsConnected = false;
+                    Interlocked.Exchange(
+                        ref automaticReauthorizationStarted,
+                        0);
+                    Interlocked.Exchange(
+                        ref nextPlaybackControlRequestUtcTicks,
+                        0);
 
-            IsConnected = false;
-            RenewSessionCancellation();
-            Interlocked.Exchange(
-                ref automaticReauthorizationStarted,
-                0);
+                    lock (tokenLock)
+                    {
+                        accessToken = "";
+                        refreshToken = "";
+                        accessTokenExpiresUtc =
+                            DateTime.MinValue;
+                    }
 
-            lock (tokenLock)
-            {
-                accessToken = "";
-                refreshToken = "";
-                accessTokenExpiresUtc =
-                    DateTime.MinValue;
-            }
+                    try
+                    {
+                        tokenStore?.Delete();
+                    }
+                    catch (Exception ex)
+                    {
+                        SimHub.Logging.Current.Error(
+                            "Could not delete the saved Spotify login. " +
+                            ex.GetType().Name);
+                    }
 
-            try
-            {
-                tokenStore?.Delete();
-            }
-            catch (Exception ex)
-            {
-                SimHub.Logging.Current.Error(
-                    "Could not delete the saved Spotify login. " +
-                    ex.GetType().Name);
-            }
+                    ClearPlaybackAndCover();
+                    ResetPlaybackBackoff();
 
-            ClearPlaybackAndCover();
-            ResetPlaybackBackoff();
-
-            HasSavedLogin = false;
-            ConnectionStatus = "Disconnected";
+                    HasSavedLogin = false;
+                    PlaybackControlStatus = "Disconnected";
+                    ConnectionStatus = "Disconnected";
+                });
         }
 
         public Task RefreshStatusAsync()
@@ -775,9 +1335,25 @@ namespace SpotifySimHub
                 return Task.CompletedTask;
             }
 
+            CancellationToken cancellationToken;
+            int operationGeneration;
+
+            lock (lifecycleLock)
+            {
+                cancellationToken =
+                    sessionCancellation?.Token ??
+                    new CancellationToken(true);
+                operationGeneration =
+                    Volatile.Read(
+                        ref authenticationGeneration);
+            }
+
             Task task =
-                RefreshStatusCoreAsync(
-                    GetSessionCancellationToken());
+                StartTrackedOperation(
+                    () =>
+                        RefreshStatusCoreAsync(
+                            cancellationToken,
+                            operationGeneration));
 
             lock (lifecycleLock)
             {
@@ -785,6 +1361,576 @@ namespace SpotifySimHub
             }
 
             return task;
+        }
+
+        public async Task TogglePlaybackAsync()
+        {
+            await QueuePlaybackControlAsync(
+                    PlaybackControlRequest.Toggle)
+                .ConfigureAwait(false);
+        }
+
+        public async Task NextTrackAsync()
+        {
+            await QueuePlaybackControlAsync(
+                    PlaybackControlRequest.Next)
+                .ConfigureAwait(false);
+        }
+
+        public async Task PreviousTrackAsync()
+        {
+            await QueuePlaybackControlAsync(
+                    PlaybackControlRequest.Previous)
+                .ConfigureAwait(false);
+        }
+
+        private void QueuePlaybackControlFromAction(
+            PlaybackControlRequest request)
+        {
+            QueuePlaybackControlAsync(
+                request);
+        }
+
+        private Task QueuePlaybackControlAsync(
+            PlaybackControlRequest request)
+        {
+            lock (lifecycleLock)
+            {
+                if (ending ||
+                    pluginCancellation == null ||
+                    pluginCancellation.IsCancellationRequested)
+                {
+                    return Task.CompletedTask;
+                }
+
+                CancellationToken cancellationToken =
+                    sessionCancellation?.Token ??
+                    new CancellationToken(true);
+                int operationGeneration =
+                    Volatile.Read(
+                        ref authenticationGeneration);
+                Task previousTask =
+                    playbackControlTask ??
+                    Task.CompletedTask;
+
+                playbackControlTask =
+                    previousTask
+                        .ContinueWith(
+                            ignored =>
+                                RunPlaybackControlAsync(
+                                    request,
+                                    cancellationToken,
+                                    operationGeneration),
+                            CancellationToken.None,
+                            TaskContinuationOptions.None,
+                            TaskScheduler.Default)
+                        .Unwrap();
+
+                RegisterLiveOperationLocked(
+                    playbackControlTask);
+
+                return playbackControlTask;
+            }
+        }
+
+        private async Task RunPlaybackControlAsync(
+            PlaybackControlRequest request,
+            CancellationToken cancellationToken,
+            int operationGeneration)
+        {
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!IsConnected ||
+                    apiClient == null)
+                {
+                    TryCommitState(
+                        operationGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            PlaybackControlStatus =
+                                "Connect Spotify before using " +
+                                "playback controls";
+                        });
+                    return;
+                }
+
+                double retrySeconds;
+
+                if (TryGetPlaybackControlRetryDelay(
+                        out retrySeconds))
+                {
+                    TryCommitState(
+                        operationGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            PlaybackControlStatus =
+                                "Spotify rate limit. Try again in " +
+                                Math.Ceiling(
+                                    retrySeconds) +
+                                " seconds.";
+                        });
+                    return;
+                }
+
+                SpotifyPlaybackCommand command =
+                    ResolvePlaybackCommand(request);
+
+                if (!TryCommitState(
+                        operationGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            PlaybackControlStatus =
+                                GetPlaybackCommandName(command) +
+                                "...";
+                        }))
+                {
+                    return;
+                }
+
+                string currentAccessToken =
+                    await GetPlaybackControlAccessTokenAsync(
+                            cancellationToken,
+                            operationGeneration)
+                        .ConfigureAwait(false);
+
+                if (string.IsNullOrEmpty(
+                        currentAccessToken))
+                {
+                    TryCommitState(
+                        operationGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            PlaybackControlStatus =
+                                "Spotify login required";
+                        });
+                    return;
+                }
+
+                if (TryGetPlaybackControlRetryDelay(
+                        out retrySeconds))
+                {
+                    TryCommitState(
+                        operationGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            PlaybackControlStatus =
+                                "Spotify rate limit. Try again in " +
+                                Math.Ceiling(
+                                    retrySeconds) +
+                                " seconds.";
+                        });
+                    return;
+                }
+
+                if (!TryCommitState(
+                        operationGeneration,
+                        cancellationToken,
+                        () => { }))
+                {
+                    return;
+                }
+
+                SpotifyPlaybackCommandResult result =
+                    await apiClient.SendPlaybackCommandAsync(
+                            currentAccessToken,
+                            command,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                if ((int)result.StatusCode == 401)
+                {
+                    bool refreshed =
+                        await RefreshAccessTokenAsync(
+                                cancellationToken,
+                                operationGeneration)
+                            .ConfigureAwait(false);
+
+                    if (!refreshed)
+                    {
+                        TryCommitState(
+                            operationGeneration,
+                            cancellationToken,
+                            () =>
+                            {
+                                PlaybackControlStatus =
+                                    "Spotify login required";
+                            });
+                        return;
+                    }
+
+                    lock (tokenLock)
+                    {
+                        currentAccessToken = accessToken;
+                    }
+
+                    if (string.IsNullOrEmpty(
+                            currentAccessToken))
+                    {
+                        TryCommitState(
+                            operationGeneration,
+                            cancellationToken,
+                            () =>
+                            {
+                                PlaybackControlStatus =
+                                    "Spotify login required";
+                            });
+                        return;
+                    }
+
+                    if (!TryCommitState(
+                            operationGeneration,
+                            cancellationToken,
+                            () => { }))
+                    {
+                        return;
+                    }
+
+                    result =
+                        await apiClient.SendPlaybackCommandAsync(
+                                currentAccessToken,
+                                command,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!result.IsSuccess)
+                {
+                    SetPlaybackControlFailureStatus(
+                        result,
+                        operationGeneration,
+                        cancellationToken);
+                    return;
+                }
+
+                if (!TryCommitState(
+                        operationGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            ApplySuccessfulPlaybackCommand(
+                                command);
+
+                            PlaybackControlStatus =
+                                GetPlaybackCommandName(command) +
+                                " sent";
+
+                            lastTrackRequest =
+                                DateTime.MinValue;
+                            ResetPlaybackBackoff();
+                            Interlocked.Exchange(
+                                ref nextPlaybackControlRequestUtcTicks,
+                                0);
+                        }))
+                {
+                    return;
+                }
+
+                await Task.Delay(
+                        250,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                await UpdatePlaybackAsync(
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                TryCommitState(
+                    operationGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        PlaybackControlStatus = "Ready";
+                    });
+            }
+            catch (OperationCanceledException)
+                when (!cancellationToken.IsCancellationRequested)
+            {
+                TryCommitState(
+                    operationGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        PlaybackControlStatus =
+                            "Spotify playback control timed out";
+                    });
+
+                SimHub.Logging.Current.Error(
+                    "Spotify playback control timed out.");
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                TryCommitState(
+                    operationGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        PlaybackControlStatus =
+                            "Spotify playback control failed";
+                    });
+
+                SimHub.Logging.Current.Error(
+                    "Spotify playback control failed. " +
+                    ex.GetType().Name);
+            }
+        }
+
+        private async Task<string>
+            GetPlaybackControlAccessTokenAsync(
+                CancellationToken cancellationToken,
+                int operationGeneration)
+        {
+            string currentAccessToken;
+            DateTime expiresUtc;
+
+            lock (tokenLock)
+            {
+                currentAccessToken = accessToken;
+                expiresUtc = accessTokenExpiresUtc;
+            }
+
+            if (string.IsNullOrEmpty(
+                    currentAccessToken) ||
+                DateTime.UtcNow >= expiresUtc)
+            {
+                bool refreshed =
+                    await RefreshAccessTokenAsync(
+                            cancellationToken,
+                            operationGeneration)
+                        .ConfigureAwait(false);
+
+                if (!refreshed)
+                {
+                    return "";
+                }
+
+                lock (tokenLock)
+                {
+                    currentAccessToken = accessToken;
+                }
+            }
+
+            return currentAccessToken ?? "";
+        }
+
+        private SpotifyPlaybackCommand
+            ResolvePlaybackCommand(
+                PlaybackControlRequest request)
+        {
+            switch (request)
+            {
+                case PlaybackControlRequest.Next:
+                    return SpotifyPlaybackCommand.Next;
+
+                case PlaybackControlRequest.Previous:
+                    return SpotifyPlaybackCommand.Previous;
+
+                default:
+                    return IsPlaying
+                        ? SpotifyPlaybackCommand.Pause
+                        : SpotifyPlaybackCommand.Play;
+            }
+        }
+
+        private static string GetPlaybackCommandName(
+            SpotifyPlaybackCommand command)
+        {
+            switch (command)
+            {
+                case SpotifyPlaybackCommand.Play:
+                    return "Play";
+
+                case SpotifyPlaybackCommand.Pause:
+                    return "Pause";
+
+                case SpotifyPlaybackCommand.Next:
+                    return "Next track";
+
+                default:
+                    return "Previous track";
+            }
+        }
+
+        private void SetPlaybackControlFailureStatus(
+            SpotifyPlaybackCommandResult result,
+            int operationGeneration,
+            CancellationToken cancellationToken)
+        {
+            TryCommitState(
+                operationGeneration,
+                cancellationToken,
+                () =>
+                {
+                    int statusCode =
+                        (int)result.StatusCode;
+
+                    if (statusCode == 403)
+                    {
+                        PlaybackControlStatus =
+                            "Spotify denied playback control. " +
+                            "Select Reconnect to approve access, " +
+                            "and check Premium/device support.";
+                        return;
+                    }
+
+                    if (statusCode == 404)
+                    {
+                        PlaybackControlStatus =
+                            "No active Spotify playback device";
+                        return;
+                    }
+
+                    if (statusCode == 429)
+                    {
+                        SchedulePlaybackControlRateLimit(
+                            result.RetryAfter);
+                        ScheduleRateLimitBackoff(
+                            result.RetryAfter);
+
+                        double retrySeconds;
+                        TryGetPlaybackControlRetryDelay(
+                            out retrySeconds);
+
+                        PlaybackControlStatus =
+                            "Spotify rate limit. Try again in " +
+                            Math.Ceiling(
+                                retrySeconds) +
+                            " seconds.";
+                        return;
+                    }
+
+                    if (statusCode == 401)
+                    {
+                        PlaybackControlStatus =
+                            "Spotify login required";
+                        return;
+                    }
+
+                    PlaybackControlStatus =
+                        statusCode > 0
+                            ? "Spotify playback control failed (HTTP " +
+                              statusCode +
+                              ")"
+                            : "Spotify playback control failed";
+                });
+        }
+
+        private void SchedulePlaybackControlRateLimit(
+            TimeSpan? retryAfter)
+        {
+            long deadline =
+                GetRetryDeadlineUtcTicks(
+                    retryAfter);
+            long current =
+                Interlocked.Read(
+                    ref nextPlaybackControlRequestUtcTicks);
+
+            while (deadline > current)
+            {
+                long observed =
+                    Interlocked.CompareExchange(
+                        ref nextPlaybackControlRequestUtcTicks,
+                        deadline,
+                        current);
+
+                if (observed == current)
+                {
+                    break;
+                }
+
+                current = observed;
+            }
+        }
+
+        private bool TryGetPlaybackControlRetryDelay(
+            out double retrySeconds)
+        {
+            long remainingTicks =
+                Interlocked.Read(
+                    ref nextPlaybackControlRequestUtcTicks) -
+                DateTime.UtcNow.Ticks;
+
+            if (remainingTicks <= 0)
+            {
+                retrySeconds = 0;
+                return false;
+            }
+
+            retrySeconds =
+                TimeSpan.FromTicks(
+                    remainingTicks).TotalSeconds;
+            return true;
+        }
+
+        private static long GetRetryDeadlineUtcTicks(
+            TimeSpan? retryAfter)
+        {
+            long nowTicks =
+                DateTime.UtcNow.Ticks;
+            long delayTicks =
+                retryAfter.HasValue
+                    ? Math.Max(
+                        TimeSpan.TicksPerSecond,
+                        retryAfter.Value.Ticks)
+                    : TimeSpan.FromSeconds(5).Ticks;
+            long maximumDelay =
+                DateTime.MaxValue.Ticks -
+                nowTicks;
+
+            return nowTicks +
+                   Math.Min(
+                       delayTicks,
+                       maximumDelay);
+        }
+
+        private void ApplySuccessfulPlaybackCommand(
+            SpotifyPlaybackCommand command)
+        {
+            PlaybackSnapshot snapshot =
+                Volatile.Read(
+                    ref playbackSnapshot);
+            long progressMs =
+                GetInterpolatedProgressMs(
+                    snapshot);
+
+            switch (command)
+            {
+                case SpotifyPlaybackCommand.Play:
+                    PublishPlaybackSnapshot(
+                        progressMs,
+                        snapshot.DurationMs,
+                        true,
+                        snapshot.HasProgress);
+                    break;
+
+                case SpotifyPlaybackCommand.Pause:
+                    PublishPlaybackSnapshot(
+                        progressMs,
+                        snapshot.DurationMs,
+                        false,
+                        snapshot.HasProgress);
+                    break;
+
+                case SpotifyPlaybackCommand.Next:
+                case SpotifyPlaybackCommand.Previous:
+                    PublishPlaybackSnapshot(
+                        0,
+                        snapshot.DurationMs,
+                        snapshot.IsPlaying,
+                        false);
+                    break;
+            }
         }
 
         private void ClearPlaybackAndCover()
@@ -796,6 +1942,11 @@ namespace SpotifySimHub
             Cover = "";
             CoverDash = "";
             CoverImage = null;
+            PublishPlaybackSnapshot(
+                0,
+                0,
+                false,
+                false);
 
             try
             {
@@ -806,6 +1957,187 @@ namespace SpotifySimHub
                 SimHub.Logging.Current.Error(
                     "Could not clear cached Spotify cover art. " +
                     ex.GetType().Name);
+            }
+        }
+
+        private void PublishPlaybackSnapshot(
+            long progressMs,
+            long durationMs,
+            bool isPlaying,
+            bool hasProgress)
+        {
+            long safeDurationMs =
+                Math.Max(
+                    0,
+                    durationMs);
+            long safeProgressMs =
+                Math.Max(
+                    0,
+                    progressMs);
+
+            if (safeDurationMs > 0)
+            {
+                safeProgressMs =
+                    Math.Min(
+                        safeProgressMs,
+                        safeDurationMs);
+            }
+
+            Volatile.Write(
+                ref playbackSnapshot,
+                new PlaybackSnapshot(
+                    safeProgressMs,
+                    safeDurationMs,
+                    isPlaying,
+                    hasProgress,
+                    Stopwatch.GetTimestamp()));
+
+            OnPropertyChanged(
+                nameof(ProgressMs));
+            OnPropertyChanged(
+                nameof(DurationMs));
+            OnPropertyChanged(
+                nameof(ProgressPercent));
+            OnPropertyChanged(
+                nameof(ProgressText));
+            OnPropertyChanged(
+                nameof(DurationText));
+            OnPropertyChanged(
+                nameof(PlaybackTime));
+            OnPropertyChanged(
+                nameof(IsPlaying));
+            OnPropertyChanged(
+                nameof(PlayPauseText));
+        }
+
+        private long GetInterpolatedProgressMs()
+        {
+            return GetInterpolatedProgressMs(
+                Volatile.Read(
+                    ref playbackSnapshot));
+        }
+
+        private static long GetInterpolatedProgressMs(
+            PlaybackSnapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                return 0;
+            }
+
+            long progressMs =
+                snapshot.ProgressMs;
+
+            if (snapshot.HasProgress &&
+                snapshot.IsPlaying &&
+                snapshot.CapturedTimestamp > 0)
+            {
+                long elapsedTicks =
+                    Stopwatch.GetTimestamp() -
+                    snapshot.CapturedTimestamp;
+
+                if (elapsedTicks > 0)
+                {
+                    progressMs +=
+                        (long)(
+                            elapsedTicks *
+                            1000.0 /
+                            Stopwatch.Frequency);
+                }
+            }
+
+            progressMs =
+                Math.Max(
+                    0,
+                    progressMs);
+
+            if (snapshot.DurationMs > 0)
+            {
+                progressMs =
+                    Math.Min(
+                        progressMs,
+                        snapshot.DurationMs);
+            }
+
+            return progressMs;
+        }
+
+        private static string FormatPlaybackTime(
+            long milliseconds)
+        {
+            TimeSpan time =
+                TimeSpan.FromMilliseconds(
+                    Math.Max(
+                        0,
+                        milliseconds));
+
+            if (time.TotalHours >= 1)
+            {
+                return
+                    ((long)time.TotalHours) +
+                    ":" +
+                    time.Minutes.ToString("00") +
+                    ":" +
+                    time.Seconds.ToString("00");
+            }
+
+            return
+                ((long)time.TotalMinutes) +
+                ":" +
+                time.Seconds.ToString("00");
+        }
+
+        private void NotifyPlaybackProgressIfNeeded()
+        {
+            PlaybackSnapshot snapshot =
+                Volatile.Read(
+                    ref playbackSnapshot);
+
+            if (!snapshot.HasProgress ||
+                !snapshot.IsPlaying)
+            {
+                return;
+            }
+
+            long now =
+                Stopwatch.GetTimestamp();
+            long previous =
+                Interlocked.Read(
+                    ref lastProgressNotificationTimestamp);
+            long interval =
+                Math.Max(
+                    1,
+                    Stopwatch.Frequency / 4);
+
+            if (now - previous < interval ||
+                Interlocked.CompareExchange(
+                    ref lastProgressNotificationTimestamp,
+                    now,
+                    previous) != previous)
+            {
+                return;
+            }
+
+            long progressMs =
+                GetInterpolatedProgressMs(
+                    snapshot);
+
+            OnPropertyChanged(
+                nameof(ProgressMs));
+            OnPropertyChanged(
+                nameof(ProgressPercent));
+
+            long progressSecond =
+                progressMs / 1000;
+
+            if (Interlocked.Exchange(
+                    ref lastProgressTextSecond,
+                    progressSecond) != progressSecond)
+            {
+                OnPropertyChanged(
+                    nameof(ProgressText));
+                OnPropertyChanged(
+                    nameof(PlaybackTime));
             }
         }
 
@@ -822,20 +2154,33 @@ namespace SpotifySimHub
         private void ScheduleRateLimitBackoff(
             TimeSpan? retryAfter)
         {
-            double requestedSeconds =
-                retryAfter?.TotalSeconds ?? 5;
-            double delaySeconds =
-                Math.Max(
-                    1,
-                    Math.Min(
-                        60,
-                        requestedSeconds));
+            ExtendPlaybackRequestDeadline(
+                GetRetryDeadlineUtcTicks(
+                    retryAfter));
+        }
 
-            Interlocked.Exchange(
-                ref nextPlaybackRequestUtcTicks,
-                DateTime.UtcNow
-                    .AddSeconds(delaySeconds)
-                    .Ticks);
+        private void ExtendPlaybackRequestDeadline(
+            long deadline)
+        {
+            long current =
+                Interlocked.Read(
+                    ref nextPlaybackRequestUtcTicks);
+
+            while (deadline > current)
+            {
+                long observed =
+                    Interlocked.CompareExchange(
+                        ref nextPlaybackRequestUtcTicks,
+                        deadline,
+                        current);
+
+                if (observed == current)
+                {
+                    break;
+                }
+
+                current = observed;
+            }
         }
 
         private void ScheduleTemporaryFailureBackoff()
@@ -850,8 +2195,7 @@ namespace SpotifySimHub
                     30,
                     1 << failureCount);
 
-            Interlocked.Exchange(
-                ref nextPlaybackRequestUtcTicks,
+            ExtendPlaybackRequestDeadline(
                 DateTime.UtcNow
                     .AddSeconds(delaySeconds)
                     .Ticks);
@@ -859,8 +2203,7 @@ namespace SpotifySimHub
 
         private void ScheduleIdlePolling()
         {
-            Interlocked.Exchange(
-                ref nextPlaybackRequestUtcTicks,
+            ExtendPlaybackRequestDeadline(
                 DateTime.UtcNow
                     .AddSeconds(5)
                     .Ticks);
@@ -881,15 +2224,15 @@ namespace SpotifySimHub
 
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (operationGeneration !=
-                    authenticationGeneration)
-                {
-                    return;
-                }
-
-                Cover = result.CoverPath;
-                CoverDash = result.DashCoverPath;
-                CoverImage = result.CoverImage;
+                TryCommitState(
+                    operationGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        Cover = result.CoverPath;
+                        CoverDash = result.DashCoverPath;
+                        CoverImage = result.CoverImage;
+                    });
             }
             catch (OperationCanceledException)
                 when (!cancellationToken.IsCancellationRequested)
@@ -949,7 +2292,9 @@ namespace SpotifySimHub
         private async Task UpdatePlaybackCoreAsync(
             CancellationToken cancellationToken)
         {
-            int playbackGeneration = authenticationGeneration;
+            int playbackGeneration =
+                Volatile.Read(
+                    ref authenticationGeneration);
 
             try
             {
@@ -968,7 +2313,8 @@ namespace SpotifySimHub
                 {
                     bool refreshed =
                         await RefreshAccessTokenAsync(
-                                cancellationToken)
+                                cancellationToken,
+                                playbackGeneration)
                             .ConfigureAwait(false);
 
                     if (!refreshed)
@@ -1001,13 +2347,12 @@ namespace SpotifySimHub
                 {
                     bool refreshed =
                         await RefreshAccessTokenAsync(
-                                cancellationToken)
+                                cancellationToken,
+                                playbackGeneration)
                             .ConfigureAwait(false);
 
                     if (!refreshed)
                     {
-                        IsConnected = false;
-                        ConnectionStatus = "Login required";
                         return;
                     }
 
@@ -1035,24 +2380,37 @@ namespace SpotifySimHub
                 if (result.Status ==
                     SpotifyPlaybackStatus.NoContent)
                 {
-                    ResetPlaybackBackoff();
-                    ScheduleIdlePolling();
-                    ClearPlaybackAndCover();
-                    CurrentTrack =
-                        "No music is currently playing";
-                    IsConnected = true;
-                    ConnectionStatus = "Connected";
+                    TryCommitState(
+                        playbackGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            ResetPlaybackBackoff();
+                            ScheduleIdlePolling();
+                            ClearPlaybackAndCover();
+                            CurrentTrack =
+                                "No music is currently playing";
+                            IsConnected = true;
+                            ConnectionStatus = "Connected";
+                        });
                     return;
                 }
 
                 if (result.Status ==
                     SpotifyPlaybackStatus.RateLimited)
                 {
-                    ScheduleRateLimitBackoff(
-                        result.RetryAfter);
-
-                    ConnectionStatus =
-                        "Spotify rate limit reached; retrying shortly";
+                    TryCommitState(
+                        playbackGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            ScheduleRateLimitBackoff(
+                                result.RetryAfter);
+                            SchedulePlaybackControlRateLimit(
+                                result.RetryAfter);
+                            ConnectionStatus =
+                                "Spotify rate limit reached; retrying shortly";
+                        });
 
                     SimHub.Logging.Current.Error(
                         "Spotify playback request was rate limited.");
@@ -1065,10 +2423,15 @@ namespace SpotifySimHub
                     result.Status ==
                         SpotifyPlaybackStatus.Unauthorized)
                 {
-                    ScheduleTemporaryFailureBackoff();
-
-                    ConnectionStatus =
-                        "Spotify is temporarily unavailable";
+                    TryCommitState(
+                        playbackGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            ScheduleTemporaryFailureBackoff();
+                            ConnectionStatus =
+                                "Spotify is temporarily unavailable";
+                        });
 
                     SimHub.Logging.Current.Error(
                         "Spotify playback request failed with HTTP status " +
@@ -1077,35 +2440,59 @@ namespace SpotifySimHub
                     return;
                 }
 
-                Track = result.TrackName;
-                Artist = result.ArtistName;
-                Album = result.AlbumName;
-                IsConnected = true;
-                ConnectionStatus = "Connected";
-                ResetPlaybackBackoff();
-
-                if (!result.IsPlaying)
-                {
-                    ScheduleIdlePolling();
-                }
-
                 if (string.IsNullOrEmpty(
                         result.TrackName))
                 {
-                    ScheduleIdlePolling();
-                    ClearPlaybackAndCover();
-                    CurrentTrack =
-                        "No music is currently playing";
+                    TryCommitState(
+                        playbackGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            ResetPlaybackBackoff();
+                            ScheduleIdlePolling();
+                            ClearPlaybackAndCover();
+                            CurrentTrack =
+                                "No music is currently playing";
+                            IsConnected = true;
+                            ConnectionStatus = "Connected";
+                        });
                     return;
                 }
 
-                CurrentTrack =
+                string currentTrackText =
                     string.IsNullOrEmpty(
                         result.ArtistName)
                         ? result.TrackName
                         : result.ArtistName +
                           " - " +
                           result.TrackName;
+
+                if (!TryCommitState(
+                        playbackGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            Track = result.TrackName;
+                            Artist = result.ArtistName;
+                            Album = result.AlbumName;
+                            PublishPlaybackSnapshot(
+                                result.ProgressMs,
+                                result.DurationMs,
+                                result.IsPlaying,
+                                result.HasProgress);
+                            IsConnected = true;
+                            ConnectionStatus = "Connected";
+                            CurrentTrack = currentTrackText;
+                            ResetPlaybackBackoff();
+
+                            if (!result.IsPlaying)
+                            {
+                                ScheduleIdlePolling();
+                            }
+                        }))
+                {
+                    return;
+                }
 
                 await UpdateCoverArtAsync(
                         result.CoverUrl,
@@ -1116,9 +2503,15 @@ namespace SpotifySimHub
             catch (OperationCanceledException)
                 when (!cancellationToken.IsCancellationRequested)
             {
-                ScheduleTemporaryFailureBackoff();
-                ConnectionStatus =
-                    "Spotify is temporarily unavailable";
+                TryCommitState(
+                    playbackGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        ScheduleTemporaryFailureBackoff();
+                        ConnectionStatus =
+                            "Spotify is temporarily unavailable";
+                    });
 
                 SimHub.Logging.Current.Error(
                     "Spotify playback request timed out.");
@@ -1129,10 +2522,15 @@ namespace SpotifySimHub
             }
             catch (Exception ex)
             {
-                ScheduleTemporaryFailureBackoff();
-
-                ConnectionStatus =
-                    "Spotify is temporarily unavailable";
+                TryCommitState(
+                    playbackGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        ScheduleTemporaryFailureBackoff();
+                        ConnectionStatus =
+                            "Spotify is temporarily unavailable";
+                    });
 
                 SimHub.Logging.Current.Error(
                     "Spotify playback update failed. " +
@@ -1141,14 +2539,16 @@ namespace SpotifySimHub
         }
 
         private async Task ConnectCoreAsync(
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            int operationGeneration)
         {
             BeginBusy();
 
             try
             {
                 await LoginToSpotifyAsync(
-                        cancellationToken)
+                        cancellationToken,
+                        operationGeneration)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -1161,7 +2561,8 @@ namespace SpotifySimHub
         }
 
         private async Task RefreshStatusCoreAsync(
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            int operationGeneration)
         {
             BeginBusy();
 
@@ -1177,7 +2578,12 @@ namespace SpotifySimHub
                 if (string.IsNullOrEmpty(
                         currentRefreshToken))
                 {
-                    LoadSavedRefreshToken();
+                    if (!LoadSavedRefreshToken(
+                            operationGeneration,
+                            cancellationToken))
+                    {
+                        return;
+                    }
                 }
 
                 lock (tokenLock)
@@ -1188,8 +2594,15 @@ namespace SpotifySimHub
                 if (string.IsNullOrEmpty(
                         currentRefreshToken))
                 {
-                    IsConnected = false;
-                    ConnectionStatus = "Login required";
+                    TryCommitState(
+                        operationGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            IsConnected = false;
+                            ConnectionStatus =
+                                "Login required";
+                        });
                     return;
                 }
 
@@ -1205,7 +2618,8 @@ namespace SpotifySimHub
 
                 if (requiresRefresh &&
                     !await RefreshAccessTokenAsync(
-                            cancellationToken)
+                            cancellationToken,
+                            operationGeneration)
                         .ConfigureAwait(false))
                 {
                     return;
@@ -1225,7 +2639,8 @@ namespace SpotifySimHub
         }
 
         private async Task StartSpotifyDelayedAsync(
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            int operationGeneration)
         {
             try
             {
@@ -1236,9 +2651,15 @@ namespace SpotifySimHub
 
                 if (!HasConfiguredClientId)
                 {
-                    IsConnected = false;
-                    ConnectionStatus =
-                        "Spotify Client ID required";
+                    TryCommitState(
+                        operationGeneration,
+                        cancellationToken,
+                        () =>
+                        {
+                            IsConnected = false;
+                            ConnectionStatus =
+                                "Spotify Client ID required";
+                        });
                     return;
                 }
 
@@ -1246,7 +2667,12 @@ namespace SpotifySimHub
 
                 try
                 {
-                    LoadSavedRefreshToken();
+                    if (!LoadSavedRefreshToken(
+                            operationGeneration,
+                            cancellationToken))
+                    {
+                        return;
+                    }
 
                     string savedRefreshToken;
 
@@ -1258,13 +2684,21 @@ namespace SpotifySimHub
                     if (string.IsNullOrEmpty(
                             savedRefreshToken))
                     {
-                        IsConnected = false;
-                        ConnectionStatus = "Login required";
+                        TryCommitState(
+                            operationGeneration,
+                            cancellationToken,
+                            () =>
+                            {
+                                IsConnected = false;
+                                ConnectionStatus =
+                                    "Login required";
+                            });
                         return;
                     }
 
                     if (await RefreshAccessTokenAsync(
-                                cancellationToken)
+                                cancellationToken,
+                                operationGeneration)
                             .ConfigureAwait(false))
                     {
                         await UpdatePlaybackAsync(
@@ -1282,7 +2716,9 @@ namespace SpotifySimHub
             }
         }
 
-        private void LoadSavedRefreshToken()
+        private bool LoadSavedRefreshToken(
+            int operationGeneration,
+            CancellationToken cancellationToken)
         {
             try
             {
@@ -1295,22 +2731,37 @@ namespace SpotifySimHub
                         "the legacy token was retained.");
                 }
 
-                lock (tokenLock)
-                {
-                    refreshToken = savedToken;
-                }
+                return TryCommitState(
+                    operationGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        lock (tokenLock)
+                        {
+                            refreshToken = savedToken;
+                        }
 
-                HasSavedLogin =
-                    !string.IsNullOrEmpty(savedToken);
+                        HasSavedLogin =
+                            !string.IsNullOrEmpty(savedToken);
+                    });
             }
             catch (Exception ex)
             {
-                HasSavedLogin = false;
-                ConnectionStatus = "Login required";
+                TryCommitState(
+                    operationGeneration,
+                    cancellationToken,
+                    () =>
+                    {
+                        HasSavedLogin = false;
+                        ConnectionStatus =
+                            "Login required";
+                    });
 
                 SimHub.Logging.Current.Error(
                     "Could not load the saved Spotify login. " +
                     ex.GetType().Name);
+
+                return false;
             }
         }
 
@@ -1364,121 +2815,97 @@ namespace SpotifySimHub
             }
         }
 
-        private void RenewSessionCancellation()
-        {
-            CancellationTokenSource previous;
-
-            lock (lifecycleLock)
-            {
-                previous = sessionCancellation;
-
-                sessionCancellation =
-                    pluginCancellation == null ||
-                    pluginCancellation.IsCancellationRequested
-                        ? null
-                        : CancellationTokenSource
-                            .CreateLinkedTokenSource(
-                                pluginCancellation.Token);
-            }
-
-            if (previous != null)
-            {
-                try
-                {
-                    previous.Cancel();
-                }
-                finally
-                {
-                    previous.Dispose();
-                }
-            }
-        }
-
         public void DataUpdate(
             PluginManager pluginManager,
             ref GameData data)
         {
-            if (ending ||
-                pluginCancellation == null ||
-                pluginCancellation.IsCancellationRequested ||
-                !IsConnected)
-            {
-                return;
-            }
+            NotifyPlaybackProgressIfNeeded();
 
             int pollIntervalSeconds =
                 Math.Max(
                     3,
                     Settings?.PollIntervalSeconds ?? 3);
 
-            if ((DateTime.UtcNow - lastTrackRequest).TotalSeconds <
-                pollIntervalSeconds)
+            TaskCompletionSource<bool> startSignal;
+
+            lock (lifecycleLock)
             {
-                return;
-            }
-
-            if (DateTime.UtcNow.Ticks <
-                Interlocked.Read(
-                    ref nextPlaybackRequestUtcTicks))
-            {
-                return;
-            }
-
-            if (!playbackSemaphore.Wait(0))
-            {
-                return;
-            }
-
-            lastTrackRequest = DateTime.UtcNow;
-
-            try
-            {
-                Task task =
-                    RunPlaybackUpdateAsync(
-                        GetSessionCancellationToken());
-
-                lock (lifecycleLock)
+                if (ending ||
+                    pluginCancellation == null ||
+                    pluginCancellation.IsCancellationRequested ||
+                    !IsConnected ||
+                    (DateTime.UtcNow - lastTrackRequest)
+                        .TotalSeconds <
+                        pollIntervalSeconds ||
+                    DateTime.UtcNow.Ticks <
+                        Interlocked.Read(
+                            ref nextPlaybackRequestUtcTicks) ||
+                    !playbackSemaphore.Wait(0))
                 {
-                    playbackTask = task;
+                    return;
                 }
+
+                lastTrackRequest = DateTime.UtcNow;
+                CancellationToken cancellationToken =
+                    sessionCancellation?.Token ??
+                    new CancellationToken(true);
+                startSignal =
+                    new TaskCompletionSource<bool>();
+                Task task =
+                    RunTrackedOperationAsync(
+                        () =>
+                            RunPlaybackUpdateAsync(
+                                cancellationToken),
+                        startSignal.Task);
+
+                playbackTask = task;
+                RegisterLiveOperationLocked(
+                    task);
             }
-            catch
-            {
-                playbackSemaphore.Release();
-                throw;
-            }
+
+            startSignal.SetResult(true);
         }
 
         public void End(PluginManager pluginManager)
         {
-            ending = true;
-
             this.SaveCommonSettings(
                 "GeneralSettings",
                 Settings);
 
-            Interlocked.Increment(
-                ref authenticationGeneration);
-
             CancellationTokenSource pluginSource;
             CancellationTokenSource sessionSource;
+            CancellationTokenSource[] retiredSources;
             Task[] operations;
 
-            lock (lifecycleLock)
+            lock (stateCommitLock)
             {
-                pluginSource = pluginCancellation;
-                sessionSource = sessionCancellation;
-                operations =
-                    new[]
-                    {
-                        startupTask,
-                        connectionTask,
-                        playbackTask
-                    };
+                ending = true;
+                Interlocked.Increment(
+                    ref authenticationGeneration);
+                IsAuthorizationInProgress = false;
+
+                lock (lifecycleLock)
+                {
+                    pluginSource = pluginCancellation;
+                    sessionSource = sessionCancellation;
+                    retiredSources =
+                        retiredSessionSources.ToArray();
+                    retiredSessionSources.Clear();
+                    operations =
+                        new Task[liveOperations.Count];
+                    liveOperations.CopyTo(
+                        operations);
+                }
             }
 
             sessionSource?.Cancel();
             pluginSource?.Cancel();
+
+            foreach (CancellationTokenSource source in
+                retiredSources)
+            {
+                source.Cancel();
+            }
 
             bool operationsCompleted = true;
 
@@ -1509,6 +2936,12 @@ namespace SpotifySimHub
             playbackSemaphore.Dispose();
             sessionSource?.Dispose();
             pluginSource?.Dispose();
+
+            foreach (CancellationTokenSource source in
+                retiredSources)
+            {
+                source.Dispose();
+            }
         }
 
         public System.Windows.Controls.Control
@@ -1591,9 +3024,78 @@ namespace SpotifySimHub
                 name: "Spotify.CoverImage",
                 valueProvider: () => CoverImage);
 
+            this.AttachDelegate(
+                name: "Spotify.ProgressMs",
+                valueProvider: () => ProgressMs);
+
+            this.AttachDelegate(
+                name: "Spotify.DurationMs",
+                valueProvider: () => DurationMs);
+
+            this.AttachDelegate(
+                name: "Spotify.ProgressPercent",
+                valueProvider: () => ProgressPercent);
+
+            this.AttachDelegate(
+                name: "Spotify.ProgressText",
+                valueProvider: () => ProgressText);
+
+            this.AttachDelegate(
+                name: "Spotify.DurationText",
+                valueProvider: () => DurationText);
+
+            this.AttachDelegate(
+                name: "Spotify.PlaybackTime",
+                valueProvider: () => PlaybackTime);
+
+            this.AttachDelegate(
+                name: "Spotify.IsPlaying",
+                valueProvider: () => IsPlaying);
+
+            this.AttachDelegate(
+                name: "Spotify.PlayPauseText",
+                valueProvider: () => PlayPauseText);
+
+            this.AttachDelegate(
+                name: "Spotify.PlaybackControlStatus",
+                valueProvider: () => PlaybackControlStatus);
+
+            this.AddAction(
+                actionName: "Spotify.PlayPause",
+                actionStart: (manager, argument) =>
+                    QueuePlaybackControlFromAction(
+                        PlaybackControlRequest.Toggle));
+
+            this.AddAction(
+                actionName: "Spotify.Next",
+                actionStart: (manager, argument) =>
+                    QueuePlaybackControlFromAction(
+                        PlaybackControlRequest.Next));
+
+            this.AddAction(
+                actionName: "Spotify.Previous",
+                actionStart: (manager, argument) =>
+                    QueuePlaybackControlFromAction(
+                        PlaybackControlRequest.Previous));
+
+            CancellationToken startupCancellationToken;
+            int startupGeneration;
+
+            lock (lifecycleLock)
+            {
+                startupCancellationToken =
+                    sessionCancellation.Token;
+                startupGeneration =
+                    Volatile.Read(
+                        ref authenticationGeneration);
+            }
+
             startupTask =
-                StartSpotifyDelayedAsync(
-                    pluginCancellation.Token);
+                StartTrackedOperation(
+                    () =>
+                        StartSpotifyDelayedAsync(
+                            startupCancellationToken,
+                            startupGeneration));
         }
     }
 }

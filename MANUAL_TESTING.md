@@ -21,8 +21,16 @@ Run this checklist only after Debug and Release builds succeed. These steps requ
 - [ ] The settings page reports `Connected`.
 - [ ] Artist, track, and album are displayed.
 - [ ] Cover art is displayed.
-- [ ] All seven documented SimHub properties work in their intended controls.
+- [ ] All documented SimHub properties work in their intended controls.
 - [ ] `[SpotifyPlugin.Spotify.CoverDash]` updates an Image from file component on both desktop and mobile dashboards when the track changes.
+- [ ] `[SpotifyPlugin.Spotify.PlaybackTime]` displays elapsed and total time as `m:ss / m:ss`.
+- [ ] `[SpotifyPlugin.Spotify.ProgressPercent]` advances smoothly between Spotify API polls and remains between `0` and `100`.
+- [ ] Pausing freezes the displayed playback position and resuming continues from the same position.
+- [ ] Reconnect requests the media-control permission for an existing saved login.
+- [ ] Previous, Play/Pause, and Next work from the plugin settings page.
+- [ ] `SpotifyPlugin.Spotify.Previous`, `.PlayPause`, and `.Next` work from dashboard buttons.
+- [ ] A missing active device produces a clear control status without crashing the plugin.
+- [ ] A non-Premium or rejected control request produces a clear control status.
 - [ ] Restarting SimHub reuses the saved refresh token.
 - [ ] Restart does not require a new browser login.
 - [ ] No active playback produces the expected status.

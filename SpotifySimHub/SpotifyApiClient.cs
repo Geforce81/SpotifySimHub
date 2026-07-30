@@ -216,6 +216,12 @@ namespace SpotifySimHub
                             .ReadAsStringAsync()
                             .ConfigureAwait(false);
                     JObject root = JObject.Parse(json);
+                    JToken progressToken =
+                        root["progress_ms"];
+                    bool hasProgress =
+                        progressToken != null &&
+                        progressToken.Type !=
+                        JTokenType.Null;
 
                     return new SpotifyPlaybackResult
                     {
@@ -224,18 +230,121 @@ namespace SpotifySimHub
                         IsPlaying =
                             root["is_playing"]
                                 ?.ToObject<bool>() ?? false,
+                        HasProgress = hasProgress,
+                        ProgressMs =
+                            hasProgress
+                                ? progressToken.ToObject<long>()
+                                : 0,
+                        DurationMs =
+                            root["item"]?["duration_ms"]
+                                ?.ToObject<long>() ?? 0,
                         TrackName =
                             root["item"]?["name"]
                                 ?.ToString() ?? "",
                         ArtistName =
-                            root["item"]?["artists"]?[0]?["name"]
+                            root.SelectToken(
+                                "item.artists[0].name")
                                 ?.ToString() ?? "",
                         AlbumName =
                             root["item"]?["album"]?["name"]
                                 ?.ToString() ?? "",
                         CoverUrl =
-                            root["item"]?["album"]?["images"]?[0]?["url"]
+                            root.SelectToken(
+                                "item.album.images[0].url")
                                 ?.ToString() ?? ""
+                    };
+                }
+            }
+        }
+
+        public async Task<SpotifyPlaybackCommandResult>
+            SendPlaybackCommandAsync(
+                string accessToken,
+                SpotifyPlaybackCommand command,
+                CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(accessToken))
+            {
+                throw new ArgumentException(
+                    "An access token is required.",
+                    nameof(accessToken));
+            }
+
+            HttpMethod method;
+            string endpoint;
+
+            switch (command)
+            {
+                case SpotifyPlaybackCommand.Play:
+                    method = HttpMethod.Put;
+                    endpoint =
+                        "https://api.spotify.com/v1/me/player/play";
+                    break;
+
+                case SpotifyPlaybackCommand.Pause:
+                    method = HttpMethod.Put;
+                    endpoint =
+                        "https://api.spotify.com/v1/me/player/pause";
+                    break;
+
+                case SpotifyPlaybackCommand.Next:
+                    method = HttpMethod.Post;
+                    endpoint =
+                        "https://api.spotify.com/v1/me/player/next";
+                    break;
+
+                case SpotifyPlaybackCommand.Previous:
+                    method = HttpMethod.Post;
+                    endpoint =
+                        "https://api.spotify.com/v1/me/player/previous";
+                    break;
+
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(command),
+                        command,
+                        "Unknown Spotify playback command.");
+            }
+
+            using (HttpRequestMessage request =
+                   new HttpRequestMessage(
+                       method,
+                       endpoint))
+            {
+                request.Headers.Authorization =
+                    new AuthenticationHeaderValue(
+                        "Bearer",
+                        accessToken);
+
+                using (HttpResponseMessage response =
+                       await httpClient.SendAsync(
+                               request,
+                               cancellationToken)
+                           .ConfigureAwait(false))
+                {
+                    TimeSpan? retryAfter = null;
+
+                    if ((int)response.StatusCode == 429 &&
+                        response.Headers.RetryAfter != null)
+                    {
+                        retryAfter =
+                            response.Headers.RetryAfter.Delta;
+
+                        if (!retryAfter.HasValue &&
+                            response.Headers.RetryAfter.Date
+                                .HasValue)
+                        {
+                            retryAfter =
+                                response.Headers.RetryAfter.Date
+                                    .Value -
+                                DateTimeOffset.UtcNow;
+                        }
+                    }
+
+                    return new SpotifyPlaybackCommandResult
+                    {
+                        StatusCode = response.StatusCode,
+                        RetryAfter = retryAfter
                     };
                 }
             }

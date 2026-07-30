@@ -55,6 +55,21 @@ DASH STUDIO PROPERTIES
 - [SpotifyPlugin.Spotify.CoverImage]  BitmapImage for local WPF image controls
 - [SpotifyPlugin.Spotify.CurrentTrack]
                                      Artist - Track
+- [SpotifyPlugin.Spotify.DurationMs]  Total duration in milliseconds
+- [SpotifyPlugin.Spotify.DurationText]
+                                     Total duration as m:ss
+- [SpotifyPlugin.Spotify.IsPlaying]   True while Spotify is playing
+- [SpotifyPlugin.Spotify.PlayPauseText]
+                                     Dynamic Play or Pause label
+- [SpotifyPlugin.Spotify.PlaybackControlStatus]
+                                     Result of the latest media command
+- [SpotifyPlugin.Spotify.PlaybackTime]
+                                     Elapsed and total time as m:ss / m:ss
+- [SpotifyPlugin.Spotify.ProgressMs]  Current position in milliseconds
+- [SpotifyPlugin.Spotify.ProgressPercent]
+                                     Current position from 0 to 100
+- [SpotifyPlugin.Spotify.ProgressText]
+                                     Elapsed time as m:ss
 - [SpotifyPlugin.Spotify.Track]       Track name only
 
 ADD TEXT TO A DASHBOARD
@@ -74,6 +89,21 @@ ADD COVER ART TO A COMPUTER, PHONE, OR TABLET
 
 [SpotifyPlugin.Spotify.Cover] is the stable JPG path for other PC integrations.
 [SpotifyPlugin.Spotify.CoverImage] is intended for local WPF controls.
+
+ADD PLAYBACK TIME AND MEDIA CONTROLS
+
+1. Bind a Text component to [SpotifyPlugin.Spotify.PlaybackTime].
+2. Bind a Progress bar Value to [SpotifyPlugin.Spotify.ProgressPercent].
+   Use minimum 0 and maximum 100.
+3. Add Button components with simulated keyboard input disabled.
+4. Select these Trigger actions:
+
+   SpotifyPlugin.Spotify.Previous
+   SpotifyPlugin.Spotify.PlayPause
+   SpotifyPlugin.Spotify.Next
+
+Media controls require Spotify Premium. Existing users must select Reconnect
+once after upgrading and approve the new Spotify permission.
 
 The Spotify account and the owner of a Development Mode app must meet
 Spotify's current eligibility requirements. SpotifySimHub is intended for
