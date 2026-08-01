@@ -244,6 +244,15 @@ The following properties are available in Dash Studio after the plugin loads:
 | `[SpotifyPlugin.Spotify.CoverDash]` | Changing JPG path for Dash Studio on a computer, phone, or tablet |
 | `[SpotifyPlugin.Spotify.CoverImage]` | `BitmapImage` for local WPF image controls |
 | `[SpotifyPlugin.Spotify.CurrentTrack]` | `Artist - Track` |
+| `[SpotifyPlugin.Spotify.DurationMs]` | Total duration in milliseconds |
+| `[SpotifyPlugin.Spotify.DurationText]` | Total duration formatted as `m:ss` |
+| `[SpotifyPlugin.Spotify.IsPlaying]` | Whether Spotify is currently playing |
+| `[SpotifyPlugin.Spotify.PlaybackControlStatus]` | Result of the latest media command |
+| `[SpotifyPlugin.Spotify.PlaybackTime]` | Elapsed and total time formatted as `m:ss / m:ss` |
+| `[SpotifyPlugin.Spotify.PlayPauseText]` | Dynamic `Play` or `Pause` label |
+| `[SpotifyPlugin.Spotify.ProgressMs]` | Current playback position in milliseconds |
+| `[SpotifyPlugin.Spotify.ProgressPercent]` | Current playback position from `0` to `100` |
+| `[SpotifyPlugin.Spotify.ProgressText]` | Elapsed time formatted as `m:ss` |
 | `[SpotifyPlugin.Spotify.Track]` | Track name only |
 
 #### Add text
@@ -261,6 +270,24 @@ The following properties are available in Dash Studio after the plugin loads:
 4. Save the dashboard and open it on the computer or mobile device.
 
 Use `[SpotifyPlugin.Spotify.CoverDash]` for Dash Studio. `[SpotifyPlugin.Spotify.Cover]` is the stable local JPG path for other PC integrations, while `[SpotifyPlugin.Spotify.CoverImage]` is intended for local WPF controls.
+
+#### Add playback progress
+
+1. Add a **Text** component and bind Text to `[SpotifyPlugin.Spotify.PlaybackTime]`.
+2. Add a **Progress bar** component with minimum `0` and maximum `100`.
+3. Bind its Value to `[SpotifyPlugin.Spotify.ProgressPercent]`.
+
+#### Add media-control buttons
+
+Spotify playback control requires Spotify Premium. Existing users must select **Reconnect** once after upgrading and approve the new permission.
+
+Add three **Button** components, disable simulated keyboard input, and select:
+
+| Button | Trigger action |
+| --- | --- |
+| Previous | `SpotifyPlugin.Spotify.Previous` |
+| Play/Pause | `SpotifyPlugin.Spotify.PlayPause` |
+| Next | `SpotifyPlugin.Spotify.Next` |
 
 ## Sharing a Development Mode application
 

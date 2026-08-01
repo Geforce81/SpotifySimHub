@@ -2,7 +2,7 @@
 
 Bring the music you are listening to into your SimHub dashboards.
 
-SpotifySimHub is a Windows plugin that exposes the current Spotify track, artist, album, and cover art as native SimHub properties. Because it reads the Spotify account's playback state through the Web API, it can follow playback on Spotify Connect devices such as a PlayStation 5. It is not limited to audio playing on the SimHub computer.
+SpotifySimHub is a Windows plugin that exposes the current Spotify track, artist, album, cover art, playback position, and media controls as native SimHub features. Because it reads the Spotify account's playback state through the Web API, it can follow and control playback on Spotify Connect devices such as a PlayStation 5. It is not limited to audio playing on the SimHub computer.
 
 ![SpotifySimHub plugin settings in SimHub](Screenshot.png)
 
@@ -23,12 +23,22 @@ SpotifySimHub fills that gap. It provides one small, local integration that:
 
 The goal is simple: music information should be as easy to place on a SimHub dashboard as speed, RPM, or any other property.
 
+## New in 1.1.0
+
+- Smooth song progress and `m:ss / m:ss` playback time
+- Previous, Play/Pause, and Next controls
+- New SimHub properties and actions for custom dashboards
+- Media controls in the SpotifySimHub settings page
+
 ## What it provides
 
 - Current artist
 - Current track
 - Current album
 - Combined `Artist - Track` text
+- Smooth playback progress between Spotify updates
+- Elapsed time, total duration, and combined `1:23 / 4:05` text
+- Previous, Play/Pause, and Next actions for dashboard buttons
 - Stable local cover-art path
 - WPF cover image for compatible SimHub controls
 - Secure Spotify browser login
@@ -58,7 +68,7 @@ At startup, the plugin checks for a saved refresh token and attempts to restore 
 
 Spotify refresh tokens expire six months after authorization. When Spotify explicitly rejects an existing token as expired, SpotifySimHub deletes it and opens the PKCE authorization flow once so the user can approve a new session. Ordinary network errors never open the browser.
 
-Playback is polled at a controlled adaptive interval: no more often than every three seconds during active playback and every five seconds while playback is paused or absent. Spotify's `429 Retry-After` response and bounded failure backoff can slow polling further. Bearer authorization is added only to individual Spotify API requests, and never to the token endpoint. Cover art is accepted only from HTTPS image responses, limited to 5 MB, decoded before use, and written atomically to local cache files.
+Playback is polled at a controlled adaptive interval: no more often than every three seconds during active playback and every five seconds while playback is paused or absent. The plugin advances the displayed playback position locally between successful Spotify responses, then corrects it at the next response. This produces a smooth progressbar without increasing API traffic. Spotify's `429 Retry-After` response and bounded failure backoff can slow polling further. Bearer authorization is added only to individual Spotify API requests, and never to the token endpoint. Cover art is accepted only from HTTPS image responses, limited to 5 MB, decoded before use, and written atomically to local cache files.
 
 ## Dash Studio properties
 
@@ -72,9 +82,18 @@ After SpotifySimHub is connected, these properties are available in the Dash Stu
 | `[SpotifyPlugin.Spotify.CoverDash]` | Changing JPG path for Dash Studio image components, including mobile dashboards |
 | `[SpotifyPlugin.Spotify.CoverImage]` | `BitmapImage` for local WPF image controls |
 | `[SpotifyPlugin.Spotify.CurrentTrack]` | Combined text in the format `Artist - Track` |
+| `[SpotifyPlugin.Spotify.DurationMs]` | Total duration in milliseconds |
+| `[SpotifyPlugin.Spotify.DurationText]` | Total duration formatted as `m:ss` |
+| `[SpotifyPlugin.Spotify.IsPlaying]` | `True` while Spotify is playing |
+| `[SpotifyPlugin.Spotify.PlaybackControlStatus]` | Status of the most recent media command |
+| `[SpotifyPlugin.Spotify.PlaybackTime]` | Combined elapsed and total time, such as `1:23 / 4:05` |
+| `[SpotifyPlugin.Spotify.PlayPauseText]` | `Play` or `Pause` for a dynamic button label |
+| `[SpotifyPlugin.Spotify.ProgressMs]` | Current playback position in milliseconds |
+| `[SpotifyPlugin.Spotify.ProgressPercent]` | Current playback position from `0` to `100` |
+| `[SpotifyPlugin.Spotify.ProgressText]` | Elapsed time formatted as `m:ss` |
 | `[SpotifyPlugin.Spotify.Track]` | Track name only |
 
-The plugin registers the `Spotify.*` property names, and SimHub exposes them in formulas below the `SpotifyPlugin` prefix. The six original property names remain compatibility contracts. `Spotify.CoverDash` is an additional property designed for Dash Studio.
+The plugin registers the `Spotify.*` property names, and SimHub exposes them in formulas below the `SpotifyPlugin` prefix. Existing property names remain compatibility contracts.
 
 ### Add track information to a dashboard
 
@@ -105,6 +124,38 @@ Use `[SpotifyPlugin.Spotify.Artist]`, `[SpotifyPlugin.Spotify.Track]`, and `[Spo
 6. Save the dashboard and open it on the computer, phone, or tablet.
 
 `[SpotifyPlugin.Spotify.CoverDash]` alternates between two local JPG files when the album art changes. This makes SimHub send each new image to web dashboards. `[SpotifyPlugin.Spotify.Cover]` remains the stable local JPG path for other PC integrations. `[SpotifyPlugin.Spotify.CoverImage]` is a WPF `BitmapImage` and is not transported to a phone browser.
+
+### Add playback time and a progressbar
+
+1. Add a **Text** component and bind its Text property to:
+
+```text
+[SpotifyPlugin.Spotify.PlaybackTime]
+```
+
+2. Add a **Progress bar** component.
+3. Set its minimum to `0` and maximum to `100`.
+4. Bind its Value property to:
+
+```text
+[SpotifyPlugin.Spotify.ProgressPercent]
+```
+
+The numeric properties are evaluated on demand, so dashboards receive smooth progress between Spotify API updates.
+
+### Add media-control buttons
+
+Spotify playback control requires Spotify Premium. After installing a version with media controls, existing users must select **Reconnect** once and approve the new Spotify permission.
+
+Add three **Button** components in Dash Studio, disable simulated keyboard input, and select these Trigger actions:
+
+| Button | Trigger action |
+| --- | --- |
+| Previous | `SpotifyPlugin.Spotify.Previous` |
+| Play/Pause | `SpotifyPlugin.Spotify.PlayPause` |
+| Next | `SpotifyPlugin.Spotify.Next` |
+
+The commands target the currently active Spotify Connect device. Start Spotify on a device first if no active device is available.
 
 ## Requirements
 
@@ -179,6 +230,30 @@ The script:
 5. creates a SHA-256 checksum beside each artifact.
 
 Generated packages are written to `dist\` and are intentionally not tracked by Git.
+
+### Optional Gothia Racing Performance combo package
+
+The separate combo package installs SpotifySimHub, Gothia Grip Monitor and the
+Gothia Racing Performance dashboard together. The normal SpotifySimHub packages
+remain available and unchanged.
+
+Build the combo package from the dashboard currently saved in SimHub:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\Build-Combo-Package.ps1 `
+  -RequireInstaller
+```
+
+The build copies the current dashboard into an isolated staging folder, removes
+manufacturer-logo objects from that package copy, runs the Gothia Grip detector
+tests and creates both an installer and a manual ZIP. It never changes the local
+dashboard used as its source.
+
+The combo installer closes SimHub before copying plugin files and does not ask
+for a Windows restart. If the dashboard already exists, its main files are first
+copied into its `_Backups` folder. The dashboard itself is retained during an
+uninstall so later user edits are not deleted.
 
 ## Build and install from source
 
@@ -316,6 +391,13 @@ Approve the Spotify browser prompt to restore the saved connection.
 
 Spotify may have no active playback. Start playback on a Spotify device and press Refresh status.
 
+### Media buttons do not respond
+
+- Confirm that the Spotify account has Premium.
+- Select **Reconnect** once after upgrading and approve the media-control permission.
+- Start Spotify playback on a phone, computer, console, or another Spotify Connect device.
+- Check `Spotify.PlaybackControlStatus` or the plugin settings page for a specific error.
+
 ### Cover art does not update
 
 The plugin accepts only valid HTTPS image responses up to 5 MB. An invalid replacement is rejected so that a partially written image cannot replace the last valid cache file.
@@ -331,9 +413,12 @@ The automated and offline verification covers:
 - expired-refresh-token detection and one-time reauthorization routing;
 - `429 Retry-After` handling;
 - adaptive three/five-second polling;
+- smooth local playback-position interpolation;
+- elapsed-time, duration, and percentage properties;
+- serialized Previous, Play/Pause, and Next actions;
 - DPAPI token storage and plaintext migration;
 - cover content-type, size, decode, and atomic-write behavior;
-- preservation of all six original SimHub property names plus `Spotify.CoverDash`;
+- preservation of all existing SimHub property names;
 
 Version 1.0.0 has also been manually verified in SimHub for plugin loading, Spotify authorization, metadata properties, dashboard rendering, and mobile cover updates. [MANUAL_TESTING.md](MANUAL_TESTING.md) remains the reusable verification checklist for future releases.
 
@@ -343,7 +428,7 @@ SpotifySimHub was built collaboratively. Special thanks to [@mescon](https://git
 
 ## Contributing
 
-Keep changes small and preserve the six original public SimHub property names. Treat `Spotify.CoverDash` as an additional public compatibility contract. Never commit:
+Keep changes small and preserve all public SimHub property and action names. Never commit:
 
 - `SpotifyClientId.local.props`;
 - generated build configuration files;
