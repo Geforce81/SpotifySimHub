@@ -1,0 +1,63 @@
+Gothia Racing Performance Combo {VERSION}
+==========================================
+
+CONTENTS
+
+- SpotifySimHub 1.1.0
+- Gothia Grip Monitor 1.2.1
+- Gothia Racing Performance dashboard
+
+The distributed dashboard does not include manufacturer logos. Personal local
+edits and images are not copied into the package.
+
+INSTALLER
+
+1. Save any open dashboard edits in SimHub.
+2. Run Gothia-Racing-Performance-Combo-{VERSION}-Setup.exe.
+3. Confirm the SimHub folder containing SimHubWPF.exe.
+4. Setup closes SimHub before replacing plugin files.
+5. Start SimHub and enable both plugins under Additional plugins.
+6. Open Dash Studio and select Gothia Racing Performance.
+
+If Gothia Racing Performance is already installed, Setup first copies its main
+files into the dashboard's _Backups folder. Setup does not require a Windows
+restart.
+
+ZIP
+
+1. Close SimHub completely.
+2. Open the SimHub installation folder containing SimHubWPF.exe.
+3. Copy everything inside the ZIP's SimHub folder into that SimHub folder.
+4. Allow Windows to merge the DashTemplates folder and replace plugin files.
+5. Start SimHub.
+
+SPOTIFY SETUP
+
+1. Open Additional plugins and select SpotifySimHub.
+2. Enter the Client ID from your personal Spotify developer application.
+3. Select Connect or Reconnect and approve the browser prompt.
+
+The exact redirect URI is:
+
+http://127.0.0.1:9877/callback
+
+Spotify media controls require Spotify Premium. Existing SpotifySimHub users
+must select Reconnect once to grant the playback-control permission.
+
+DASHBOARD CONTROLS
+
+The included dashboard contains Previous, Play/Pause, Next and seek controls.
+It also uses Gothia Grip Monitor for loss-of-grip and temperature warnings.
+
+FILES COPIED INTO SIMHUB
+
+- SpotifySimHub.dll
+- Newtonsoft.Json.dll
+- GothiaGripPlugin.dll
+- DashTemplates\Gothia Racing Performance\Gothia Racing Performance.djson
+- The dashboard preview, metadata and embedded resource sidecar files
+- ImageLibrary\GothiaRacingPerformance\Icons\ dashboard icons
+
+The installer leaves SpotifySimHub and the dashboard in place during uninstall
+because they may be shared with a standalone installation or contain later user
+edits. GothiaGripPlugin.dll and the combo documentation are removed normally.

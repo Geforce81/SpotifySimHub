@@ -349,5 +349,69 @@ namespace SpotifySimHub
                 }
             }
         }
+
+        public async Task<SpotifyPlaybackCommandResult>
+            SeekPlaybackAsync(
+                string accessToken,
+                long positionMs,
+                CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(accessToken))
+            {
+                throw new ArgumentException(
+                    "An access token is required.",
+                    nameof(accessToken));
+            }
+
+            string endpoint =
+                "https://api.spotify.com/v1/me/player/seek" +
+                "?position_ms=" +
+                Math.Max(
+                    0,
+                    positionMs);
+
+            using (HttpRequestMessage request =
+                   new HttpRequestMessage(
+                       HttpMethod.Put,
+                       endpoint))
+            {
+                request.Headers.Authorization =
+                    new AuthenticationHeaderValue(
+                        "Bearer",
+                        accessToken);
+
+                using (HttpResponseMessage response =
+                       await httpClient.SendAsync(
+                               request,
+                               cancellationToken)
+                           .ConfigureAwait(false))
+                {
+                    TimeSpan? retryAfter = null;
+
+                    if ((int)response.StatusCode == 429 &&
+                        response.Headers.RetryAfter != null)
+                    {
+                        retryAfter =
+                            response.Headers.RetryAfter.Delta;
+
+                        if (!retryAfter.HasValue &&
+                            response.Headers.RetryAfter.Date
+                                .HasValue)
+                        {
+                            retryAfter =
+                                response.Headers.RetryAfter.Date
+                                    .Value -
+                                DateTimeOffset.UtcNow;
+                        }
+                    }
+
+                    return new SpotifyPlaybackCommandResult
+                    {
+                        StatusCode = response.StatusCode,
+                        RetryAfter = retryAfter
+                    };
+                }
+            }
+        }
     }
 }

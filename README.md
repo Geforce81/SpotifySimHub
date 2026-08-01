@@ -231,6 +231,30 @@ The script:
 
 Generated packages are written to `dist\` and are intentionally not tracked by Git.
 
+### Optional Gothia Racing Performance combo package
+
+The separate combo package installs SpotifySimHub, Gothia Grip Monitor and the
+Gothia Racing Performance dashboard together. The normal SpotifySimHub packages
+remain available and unchanged.
+
+Build the combo package from the dashboard currently saved in SimHub:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\Build-Combo-Package.ps1 `
+  -RequireInstaller
+```
+
+The build copies the current dashboard into an isolated staging folder, removes
+manufacturer-logo objects from that package copy, runs the Gothia Grip detector
+tests and creates both an installer and a manual ZIP. It never changes the local
+dashboard used as its source.
+
+The combo installer closes SimHub before copying plugin files and does not ask
+for a Windows restart. If the dashboard already exists, its main files are first
+copied into its `_Backups` folder. The dashboard itself is retained during an
+uninstall so later user edits are not deleted.
+
 ## Build and install from source
 
 ### 1. Configure the local SimHub build path

@@ -53,8 +53,27 @@ namespace SpotifySimHub
         {
             if (!Dispatcher.CheckAccess())
             {
-                Dispatcher.BeginInvoke(
-                    new System.Action(UpdateButtonState));
+                if (Dispatcher.HasShutdownStarted ||
+                    Dispatcher.HasShutdownFinished)
+                {
+                    return;
+                }
+
+                try
+                {
+                    Dispatcher.BeginInvoke(
+                        new System.Action(UpdateButtonState));
+                }
+                catch (System.InvalidOperationException)
+                {
+                    // The settings view can be unloaded while an update is
+                    // already queued. Playback must continue unaffected.
+                }
+                return;
+            }
+
+            if (!IsLoaded)
+            {
                 return;
             }
 

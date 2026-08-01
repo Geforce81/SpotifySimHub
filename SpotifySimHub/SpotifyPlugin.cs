@@ -61,7 +61,8 @@ namespace SpotifySimHub
         {
             Toggle,
             Next,
-            Previous
+            Previous,
+            Seek
         }
 
         public SpotifyPluginSettings Settings;
@@ -1384,6 +1385,15 @@ namespace SpotifySimHub
                 .ConfigureAwait(false);
         }
 
+        public async Task SeekToPercentAsync(
+            int seekPercent)
+        {
+            await QueuePlaybackControlAsync(
+                    PlaybackControlRequest.Seek,
+                    seekPercent)
+                .ConfigureAwait(false);
+        }
+
         private void QueuePlaybackControlFromAction(
             PlaybackControlRequest request)
         {
@@ -1391,8 +1401,22 @@ namespace SpotifySimHub
                 request);
         }
 
+        private void QueueSeekFromAction(
+            int seekPercent)
+        {
+            SimHub.Logging.Current.Info(
+                "Spotify seek action triggered: " +
+                seekPercent +
+                "%");
+
+            QueuePlaybackControlAsync(
+                PlaybackControlRequest.Seek,
+                seekPercent);
+        }
+
         private Task QueuePlaybackControlAsync(
-            PlaybackControlRequest request)
+            PlaybackControlRequest request,
+            int seekPercent = -1)
         {
             lock (lifecycleLock)
             {
@@ -1419,6 +1443,7 @@ namespace SpotifySimHub
                             ignored =>
                                 RunPlaybackControlAsync(
                                     request,
+                                    seekPercent,
                                     cancellationToken,
                                     operationGeneration),
                             CancellationToken.None,
@@ -1435,6 +1460,7 @@ namespace SpotifySimHub
 
         private async Task RunPlaybackControlAsync(
             PlaybackControlRequest request,
+            int seekPercent,
             CancellationToken cancellationToken,
             int operationGeneration)
         {
@@ -1476,8 +1502,54 @@ namespace SpotifySimHub
                     return;
                 }
 
+                bool isSeek =
+                    request == PlaybackControlRequest.Seek;
                 SpotifyPlaybackCommand command =
-                    ResolvePlaybackCommand(request);
+                    SpotifyPlaybackCommand.Play;
+                long seekPositionMs = 0;
+                string controlName;
+
+                if (isSeek)
+                {
+                    PlaybackSnapshot snapshot =
+                        Volatile.Read(
+                            ref playbackSnapshot);
+
+                    if (snapshot.DurationMs <= 0)
+                    {
+                        TryCommitState(
+                            operationGeneration,
+                            cancellationToken,
+                            () =>
+                            {
+                                PlaybackControlStatus =
+                                    "Spotify track duration unavailable";
+                            });
+                        return;
+                    }
+
+                    int safeSeekPercent =
+                        Math.Max(
+                            0,
+                            Math.Min(
+                                100,
+                                seekPercent));
+                    seekPositionMs =
+                        snapshot.DurationMs *
+                        safeSeekPercent /
+                        100;
+                    controlName =
+                        "Seek to " +
+                        FormatPlaybackTime(
+                            seekPositionMs);
+                }
+                else
+                {
+                    command =
+                        ResolvePlaybackCommand(request);
+                    controlName =
+                        GetPlaybackCommandName(command);
+                }
 
                 if (!TryCommitState(
                         operationGeneration,
@@ -1485,7 +1557,7 @@ namespace SpotifySimHub
                         () =>
                         {
                             PlaybackControlStatus =
-                                GetPlaybackCommandName(command) +
+                                controlName +
                                 "...";
                         }))
                 {
@@ -1538,9 +1610,11 @@ namespace SpotifySimHub
                 }
 
                 SpotifyPlaybackCommandResult result =
-                    await apiClient.SendPlaybackCommandAsync(
+                    await SendPlaybackControlRequestAsync(
                             currentAccessToken,
+                            isSeek,
                             command,
+                            seekPositionMs,
                             cancellationToken)
                         .ConfigureAwait(false);
 
@@ -1593,9 +1667,11 @@ namespace SpotifySimHub
                     }
 
                     result =
-                        await apiClient.SendPlaybackCommandAsync(
+                        await SendPlaybackControlRequestAsync(
                                 currentAccessToken,
+                                isSeek,
                                 command,
+                                seekPositionMs,
                                 cancellationToken)
                             .ConfigureAwait(false);
                 }
@@ -1616,11 +1692,19 @@ namespace SpotifySimHub
                         cancellationToken,
                         () =>
                         {
-                            ApplySuccessfulPlaybackCommand(
-                                command);
+                            if (isSeek)
+                            {
+                                ApplySuccessfulSeek(
+                                    seekPositionMs);
+                            }
+                            else
+                            {
+                                ApplySuccessfulPlaybackCommand(
+                                    command);
+                            }
 
                             PlaybackControlStatus =
-                                GetPlaybackCommandName(command) +
+                                controlName +
                                 " sent";
 
                             lastTrackRequest =
@@ -1684,6 +1768,28 @@ namespace SpotifySimHub
                     "Spotify playback control failed. " +
                     ex.GetType().Name);
             }
+        }
+
+        private Task<SpotifyPlaybackCommandResult>
+            SendPlaybackControlRequestAsync(
+                string currentAccessToken,
+                bool isSeek,
+                SpotifyPlaybackCommand command,
+                long seekPositionMs,
+                CancellationToken cancellationToken)
+        {
+            if (isSeek)
+            {
+                return apiClient.SeekPlaybackAsync(
+                    currentAccessToken,
+                    seekPositionMs,
+                    cancellationToken);
+            }
+
+            return apiClient.SendPlaybackCommandAsync(
+                currentAccessToken,
+                command,
+                cancellationToken);
         }
 
         private async Task<string>
@@ -1931,6 +2037,20 @@ namespace SpotifySimHub
                         false);
                     break;
             }
+        }
+
+        private void ApplySuccessfulSeek(
+            long seekPositionMs)
+        {
+            PlaybackSnapshot snapshot =
+                Volatile.Read(
+                    ref playbackSnapshot);
+
+            PublishPlaybackSnapshot(
+                seekPositionMs,
+                snapshot.DurationMs,
+                snapshot.IsPlaying,
+                true);
         }
 
         private void ClearPlaybackAndCover()
@@ -2534,7 +2654,9 @@ namespace SpotifySimHub
 
                 SimHub.Logging.Current.Error(
                     "Spotify playback update failed. " +
-                    ex.GetType().Name);
+                    ex.GetType().Name +
+                    ": " +
+                    ex.Message);
             }
         }
 
@@ -3077,6 +3199,21 @@ namespace SpotifySimHub
                 actionStart: (manager, argument) =>
                     QueuePlaybackControlFromAction(
                         PlaybackControlRequest.Previous));
+
+            for (int seekPercent = 0;
+                 seekPercent <= 100;
+                 seekPercent++)
+            {
+                int capturedSeekPercent = seekPercent;
+
+                this.AddAction(
+                    actionName:
+                        "Spotify.Seek." +
+                        capturedSeekPercent,
+                    actionStart: (manager, argument) =>
+                        QueueSeekFromAction(
+                            capturedSeekPercent));
+            }
 
             CancellationToken startupCancellationToken;
             int startupGeneration;

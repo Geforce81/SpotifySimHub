@@ -65,7 +65,8 @@ namespace SpotifySimHub
         {
             get
             {
-                return StatusCode == HttpStatusCode.NoContent;
+                int statusCode = (int)StatusCode;
+                return statusCode >= 200 && statusCode <= 299;
             }
         }
     }
